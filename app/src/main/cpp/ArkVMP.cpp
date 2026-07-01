@@ -28,22 +28,6 @@ extern "C" void ArkVMP_SetContext(JNIEnv *env, jobject context) {
     VmpRuntime_SetContext(env, context);
 }
 
-static std::string jstringToString(JNIEnv *env, jstring str) {
-    if (str == nullptr) {
-        return "";
-    }
-
-    const char *chars = env->GetStringUTFChars(str, nullptr);
-    if (chars == nullptr) {
-        return "";
-    }
-
-    std::string result(chars);
-    env->ReleaseStringUTFChars(str, chars);
-
-    return result;
-}
-
 // ==================== 第二代嵌入式方案 ====================
 // VMP 类名固定为 com/ark/safe/VMP
 // 不再通过 System.getProperty("ark") 查找壳类名
