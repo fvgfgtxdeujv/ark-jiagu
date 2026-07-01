@@ -761,11 +761,16 @@ public class VmpUtils {
         if (instruction instanceof WideLiteralInstruction) {
             WideLiteralInstruction insn = (WideLiteralInstruction) instruction;
             out.literalType = 2;
-            out.literalValue = insn.getWideLiteral();
+            // ==================== 常量池加密（魔改#8） ====================
+            // 用 codeUnitOffset 派生 XOR 密钥，每个指令的字面量加密不同
+            int litKey = (int)((codeUnitOffset * 0x9E3779B9L) & 0xFF);
+            out.literalValue = insn.getWideLiteral() ^ litKey;
+            // ====================================================
         } else if (instruction instanceof NarrowLiteralInstruction) {
             NarrowLiteralInstruction insn = (NarrowLiteralInstruction) instruction;
             out.literalType = 1;
-            out.literalValue = insn.getNarrowLiteral();
+            int litKey = (int)((codeUnitOffset * 0x9E3779B9L) & 0xFF);
+            out.literalValue = insn.getNarrowLiteral() ^ litKey;
         }
 
         if (instruction instanceof OffsetInstruction) {

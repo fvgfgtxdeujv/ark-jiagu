@@ -565,6 +565,14 @@ public class VmpJiaguEntry {
                 int literalType = readIntLE(raf);
                 long literalValue = readLongLE(raf);
 
+                // ==================== 常量池解密（魔改#8） ====================
+                // 用 codeUnitOffset 派生 XOR 密钥解密字面量
+                if (literalType == 1 || literalType == 2) {
+                    int litKey = (int)((codeUnitOffset * 0x9E3779B9L) & 0xFF);
+                    literalValue ^= litKey;
+                }
+                // ====================================================
+
                 int offsetType = readIntLE(raf);
                 int offsetValue = readIntLE(raf);
 

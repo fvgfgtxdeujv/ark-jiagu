@@ -586,6 +586,15 @@ bool VmpParser_FindMethod(
 
         if (!readIntLE(g_bin.rawData, pos, insn.literalType)) return false;
         if (!readLongLE(g_bin.rawData, pos, literalValue)) return false;
+
+        // ==================== 常量池解密（魔改#8） ====================
+        // 用 codeUnitOffset 派生 XOR 密钥解密字面量
+        if (insn.literalType == 1 || insn.literalType == 2) {
+            int litKey = (int)((insn.codeUnitOffset * 0x9E3779B9LL) & 0xFF);
+            literalValue ^= litKey;
+        }
+        // ====================================================
+
         insn.literalValue = literalValue;
 
         if (!readIntLE(g_bin.rawData, pos, insn.offsetType)) return false;
