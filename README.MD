@@ -27,11 +27,12 @@
   │   ├─ 注入 VMP 类（com.ark.safe.VMP）
   │   │   ├─ <clinit> → System.loadLibrary("ArkStub")
   │   │   ├─ attachBaseContext（native）
-  │   │   └─ callVoid/callInt/...（native，由 JNI_OnLoad 注册）
+  │   │   ├─ isDebuggable()（静态方法，检查 FLAG_DEBUGGABLE）
+  │   │   └─ callVoid/callInt/...（native，由 JNI_OnLoad 注册，带 isDebuggable 参数）
   │   │
-  │   └─ 被保护方法替换为 VMP.callXxx(methodId, this, args)
+  │   └─ 被保护方法替换为 VMP.callXxx(methodId, this, args, isDebuggable)
   │
-  ├─ 注入 lib// 目录（ArkStub SO）
+  ├─ 注入 lib/ 目录（ArkStub SO）
   │
   └─ 重新打包 APK（原始 manifest，原始 Application）
 ```
@@ -138,32 +139,52 @@ com.example.security.SignVerifier.verify
 
 ## 源码文件说明
 
-### Java 层
+### Java 层（已拆分为模块化架构）
 
-| 文件 | 说明 |
-|------|------|
-| `VmpUtils.java` | 核心工具类：dex 解析、指令提取、bin 文件生成、方法重写 |
-| `VmpUtils2.java` | **新增**：第二代 VMP 类生成器，生成带 `<clinit>` 的嵌入式 VMP 类 |
-| `VmpJiaguEntry.java` | 加固入口：解压 APK → 抽取 → 重写 dex |
-| `VmpRunner.java` | **新增**：命令行独立运行器，脱离 Android 环境也能用 |
-| `MainActivity.java` | Android GUI：设置方法规则 → 执行加固 |
+Java 层已从单体架构重构为模块化架构：
 
-### C++ 层
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| `VmpUtils.java` | 405 | 薄 Facade，所有方法委托给子模块，保持向后兼容 |
+| `VmpUtils2.java` | 332 | 第二代 VMP 类生成器，生成带 `<clinit>` 的嵌入式 VMP 类 |
+| `VmpJiaguEntry.java` | 857 | 加固入口：解压 APK → 抽取 → 重写 dex |
+| `VmpRunner.java` | 413 | 命令行独立运行器，脱离 Android 环境也能用 |
+| `VmpInvokeCustomHelper.java` | 455 | invoke-custom 指令辅助处理 |
+| `VmpMethodMatcher.java` | 94 | 方法规则解析与匹配（通配符规则引擎） |
+| `VmpMethodFilter.java` | 58 | 方法过滤（排除构造器/抽象/桥接方法） |
+| `VmpOpcodeMap.java` | 293 | Opcode 映射池（随机化 vmOpcode ↔ realOpcode） |
+| `VmpDexReader.java` | 201 | DEX 读取与类型工具（Zip 提取、LE 读写、类型转换） |
+| `VmpInstructionExtractor.java` | 257 | 指令/异常块提取（dalvik 指令 → VmpInstruction） |
+| `VmpReferenceSerializer.java` | 214 | 引用序列化（方法/字段/类型/句柄引用） |
+| `VmpMethodTracker.java` | 65 | 方法记录/查找（ExtractedMethodInfo 映射表） |
+| `VmpBinFormat.java` | 661 | vmp.bin 写入主逻辑（乱序存储、变长编码、指令分片） |
+| `VmpSmaliBuilder.java` | 763 | VMP 类生成 + DEX 重写（含 isDebuggable 调试检测） |
+| `VmpTextWriter.java` | 102 | 调试文本输出（vmp.txt 人类可读格式） |
 
-| 文件 | 说明 |
-|------|------|
-| `ArkVMP.cpp` | SO 自校验 + JNI_OnLoad 注册 |
-| `VmpRuntime.cpp` | VM 运行时：解析 vmp.bin → 指令分发 + SO/DEX 交叉校验 |
-| `VmpInterpreter.cpp` | 指令执行引擎（控制流扁平化 dispatch） |
-| `VmHandlers.cpp` | 各 dalvik 指令的 C++ 实现（含数据即代码/代码虚拟化） |
-| `VmHandlers.h` | handler 函数声明 |
-| `VmpParser.cpp` | vmp.bin 多层解密 + 变长解码 + 哈希链 + HMAC 校验 |
-| `VmpTypes.h` | 数据结构定义（含 regPerm 寄存器混淆） |
-| `VmContext.h/cpp` | VM 执行上下文（dispatch state + 寄存器映射） |
-| `VmOpcodeDef.h` | Dalvik opcode 常量定义 |
-| `VmOpcodeHandler.cpp` | opcode → handler 分发表 |
-| `ArkAntiDebug.cpp` | 反调试检测（ptrace/Frida/Tracer/时间差） |
-| `ArkAntiDebug.h` | 反调试接口声明 |
+### C++ 层（已去重 + 模块化拆分）
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| `VmHandlers.cpp` | 9829 | VM opcode 调度（256 条 dalvik 指令实现，已去重） |
+| `ArkDexLoader.cpp` | 1493 | DEX 加载主逻辑（壳 dex 解密 + ClassLoader 注入） |
+| `VmpParser.cpp` | 1043 | vmp.bin 多层解密 + 变长解码 + 哈希链 + HMAC 校验 |
+| `ArkTool.cpp` | 862 | Shell DEX 构建工具（加密块 + DEX 头修复） |
+| `ArkEnvGuard.cpp` | 603 | Xposed/Root/框架环境检测 |
+| `ArkDexBlock.cpp/h` | 336+68 | 加密块结构体 + 块解析辅助函数（从 ArkDexLoader 拆分） |
+| `VmOpcodeHandler.cpp` | 281 | opcode → handler 分发表初始化 |
+| `VmHandlers.h` | 272 | handler 函数声明 |
+| `VmOpcodeDef.h` | 268 | Dalvik opcode 常量定义 |
+| `ArkVMP.cpp` | 244 | SO 自校验 + JNI_OnLoad 注册（含 isDebuggable 传递） |
+| `ArkAntiDebug.cpp` | 215 | 反调试检测（ptrace/Frida/Tracer/时间差） |
+| `VmpRuntime.cpp` | 212 | VM 运行时入口 + 反调试调度（含调试模式跳过） |
+| `ArkStub.cpp` | 205 | Stub Application JNI 注册 |
+| `ArkIntegrity.cpp/h` | 184+35 | DEX 完整性校验 + SO/DEX 交叉绑定（从 ArkAntiDebug 拆分） |
+| `sha256.cpp` | 160 | SHA256 实现 |
+| `VmContext.cpp` | 149 | VM 执行上下文初始化 |
+| `VmpTypes.h` | 123 | 数据结构定义（含 regPerm 寄存器混淆） |
+| `ArkCrypto.cpp/h` | 108+10 | SHA1/Adler32/LeftRotate 加密工具（从 ArkTool 拆分） |
+| `VmpInterpreter.cpp` | 104 | 指令执行引擎（控制流扁平化 dispatch） |
+| `VmContext.h` | 82 | VM 上下文结构定义 |
 
 ## SO 加载流程
 
@@ -206,19 +227,19 @@ java -cp "smali.jar:VmpRunner.jar" com.ark.jiagu.vm.VmpRunner \
 
 ## vmp.bin 加密特性清单
 
-| # | 特性 | 作用 | 文件 |
-|---|------|------|------|
-| 1 | 多层嵌套加密 | 双层密钥（XOR + 8轮轮混淆 + 字节置换） | VmpUtils.java / VmpParser.cpp |
-| 2 | 分块独立加密 | 每方法块独立 XOR 密钥，密钥由 methodId 派生 | VmpUtils.java / VmpParser.cpp |
-| 3 | 乱序存储 | Fisher-Yates 洗牌，方法块伪随机排列 | VmpUtils.java / VmpParser.cpp |
-| 5 | HMAC-SHA256 | 全局完整性校验，密钥绑定 opcode 映射表 | VmpUtils.java / VmpParser.cpp |
-| 6 | 哈希链 | 方法块间链式 SHA256 绑定，改一破全 | VmpUtils.java / VmpParser.cpp |
-| 7 | 索引自校验 | 索引表 offset/size 旋转+XOR 混淆 + 校验和 | VmpUtils.java / VmpParser.cpp |
-| 11 | 变长编码 | int/long 用 1~9 字节编码，小型值更紧凑 | VmpUtils.java / VmpParser.cpp |
-| 12 | 字段交错存储 | 元数据（头部）→ 指令 → 元数据（尾部），破坏顺序 | VmpUtils.java / VmpParser.cpp |
-| 13 | 冗余填充 | 方法块前后 4~32 字节随机垃圾，掩盖真实边界 | VmpUtils.java / VmpParser.cpp |
-| 15 | 指令分片 | 长指令拆为 2~4 碎片，散布 bin 末尾 + 垃圾分隔 | VmpUtils.java / VmpParser.cpp |
-| 16 | 加密跳转表 | 索引表 offset/size 旋转混淆，静态分析无法直接读取 | VmpUtils.java / VmpParser.cpp |
+| # | 特性 | 作用 | 实现位置 |
+|---|------|------|---------|
+| 1 | 多层嵌套加密 | 双层密钥（XOR + 8轮轮混淆 + 字节置换） | VmpBinFormat.java / VmpParser.cpp |
+| 2 | 分块独立加密 | 每方法块独立 XOR 密钥，密钥由 methodId 派生 | VmpBinFormat.java / VmpParser.cpp |
+| 3 | 乱序存储 | Fisher-Yates 洗牌，方法块伪随机排列 | VmpBinFormat.java / VmpParser.cpp |
+| 5 | HMAC-SHA256 | 全局完整性校验，密钥绑定 opcode 映射表 | VmpBinFormat.java / VmpParser.cpp |
+| 6 | 哈希链 | 方法块间链式 SHA256 绑定，改一破全 | VmpBinFormat.java / VmpParser.cpp |
+| 7 | 索引自校验 | 索引表 offset/size 旋转+XOR 混淆 + 校验和 | VmpBinFormat.java / VmpParser.cpp |
+| 11 | 变长编码 | int/long 用 1~9 字节编码，小型值更紧凑 | VmpBinFormat.java / VmpParser.cpp |
+| 12 | 字段交错存储 | 元数据（头部）→ 指令 → 元数据（尾部），破坏顺序 | VmpBinFormat.java / VmpParser.cpp |
+| 13 | 冗余填充 | 方法块前后 4~32 字节随机垃圾，掩盖真实边界 | VmpBinFormat.java / VmpParser.cpp |
+| 15 | 指令分片 | 长指令拆为 2~4 碎片，散布 bin 末尾 + 垃圾分隔 | VmpBinFormat.java / VmpParser.cpp |
+| 16 | 加密跳转表 | 索引表 offset/size 旋转混淆，静态分析无法直接读取 | VmpBinFormat.java / VmpParser.cpp |
 
 ## 运行时加固特性清单
 
@@ -228,23 +249,24 @@ java -cp "smali.jar:VmpRunner.jar" com.ark.jiagu.vm.VmpRunner \
 | 2 | Frida 检测（maps + fd） | ArkAntiDebug.cpp | 魔改#1-4 |
 | 3 | Tracer 检测（TracerPid + getppid） | ArkAntiDebug.cpp | 魔改#1-4 |
 | 4 | 时间差检测（单步跟踪检测） | ArkAntiDebug.cpp | 魔改#1-4 |
-| 5 | Opcode 随机化（每次加固不同映射表） | VmpUtils.java / VmpParser.cpp | 魔改#5 |
+| 5 | Opcode 随机化（每次加固不同映射表） | VmpOpcodeMap.java / VmpParser.cpp | 魔改#5 |
 | 6 | 假指令插入（NOP 混淆） | VmpJiaguEntry.java | 魔改#6 |
-| 7 | 寄存器别名（随机偏移寄存器索引） | VmpUtils.java / VmpTypes.h | 魔改#7 |
-| 8 | 常量池加密（字面量 XOR 混淆） | VmpUtils.java / VmpParser.cpp | 魔改#8 |
+| 7 | 寄存器别名（随机偏移寄存器索引） | VmpSmaliBuilder.java / VmpTypes.h | 魔改#7 |
+| 8 | 常量池加密（字面量 XOR 混淆） | VmpBinFormat.java / VmpParser.cpp | 魔改#8 |
 | 9 | SO 自校验（CRC32 定期检测） | ArkVMP.cpp / VmpRuntime.cpp | 魔改#9 |
-| 10 | DEX 完整性校验（SHA256） | ArkAntiDebug.cpp | 魔改#10 |
-| 11 | 多级交叉校验（SO↔DEX 绑定） | ArkAntiDebug.cpp | 魔改#11 |
-| 12 | 签名链（方法块 SHA256 防篡改） | VmpUtils.java / VmpParser.cpp | 魔改#12 |
+| 10 | DEX 完整性校验（SHA256） | ArkIntegrity.cpp | 魔改#10 |
+| 11 | 多级交叉校验（SO↔DEX 绑定） | ArkIntegrity.cpp | 魔改#11 |
+| 12 | 签名链（方法块 SHA256 防篡改） | VmpBinFormat.java / VmpParser.cpp | 魔改#12 |
 | 13 | 控制流扁平化（dispatch state 替代 pc++） | VmpInterpreter.cpp | 魔改#13 |
 | 14 | 不透明谓词（IF_NEZ/IF_EQZ 永远分支） | VmpJiaguEntry.java | 魔改#14 |
 | 15 | 代码虚拟化（嵌套迷你 VM 执行加密字节码） | VmHandlers.cpp | 魔改#15 |
 | 16 | 栈混淆（运行时动态寄存器映射 regPerm） | VmContext.h / VmContext.cpp | 魔改#16 |
-| 18 | 自解密（每方法块独立 XOR 密钥） | VmpUtils.java / VmpParser.cpp | 魔改#18 |
-| 19 | 指令重叠（相邻指令共享字面量） | VmpUtils.java / VmpParser.cpp | 魔改#19 |
+| 18 | 自解密（每方法块独立 XOR 密钥） | VmpBinFormat.java / VmpParser.cpp | 魔改#18 |
+| 19 | 指令重叠（相邻指令共享字面量） | VmpBinFormat.java / VmpParser.cpp | 魔改#19 |
 | 20 | 垃圾指令增强（5种类型：MOVE/AND/OR/XOR/ADD） | VmpJiaguEntry.java | 魔改#20 |
 | 21 | 跳转混淆（try-catch 代替直接跳转） | VmpJiaguEntry.java | 魔改#21 |
 | 22 | 数据即代码（VMOP_EXEC_DATA 迷你解释器） | VmHandlers.cpp | 魔改#22 |
+| 23 | 调试模式检测（FLAG_DEBUGGABLE） | VmpUtils2.java / VmpRuntime.cpp | 新增 |
 
 ## 原始代码
 
@@ -259,6 +281,6 @@ protected void onCreate(Bundle bundle) {
 VMP 保护后：
 ```java
 protected void onCreate(Bundle bundle) {
-    VMP.callVoid(1, this, new Object[]{bundle});
+    VMP.callVoid(1, this, new Object[]{bundle}, isDebuggable);
 }
 ```
