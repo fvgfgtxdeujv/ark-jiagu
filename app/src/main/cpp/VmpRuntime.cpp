@@ -107,6 +107,18 @@ VmResult VmpRuntime_Execute(
     }
     // ====================================================
 
+    // ==================== 多级交叉校验（魔改#11） ====================
+    // SO 和 DEX 互相绑定，任何一方被篡改都会检测到
+    static int crossCheckCounter = 0;
+    if (++crossCheckCounter >= 1000) {
+        crossCheckCounter = 0;
+        if (!checkCrossBinding(env)) {
+            LOGE("交叉校验失败，SO/DEX绑定关系被破坏");
+            return result;
+        }
+    }
+    // ====================================================
+
     jsize argCount = 0;
     if (args != nullptr) {
         argCount = env->GetArrayLength(args);

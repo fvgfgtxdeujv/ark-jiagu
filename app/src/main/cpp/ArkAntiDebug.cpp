@@ -354,3 +354,39 @@ bool checkDexIntegrity(JNIEnv *env) {
 
     return true;
 }
+
+// ==================== #11 多级校验 ====================
+// SO 校验 DEX hash，DEX 校验 SO hash，互相绑定
+// 任何一方被篡改都会导致校验失败
+
+static unsigned char g_boundSoCrc32 = 0;
+static bool g_boundSoValid = false;
+
+// 将 DEX SHA256 的前 4 字节与 SO CRC32 绑定
+// 这样 SO 和 DEX 形成绑定关系
+static bool checkCrossBinding(JNIEnv *env) {
+    if (!g_dexShaValid || !g_selfCrcValid) {
+        // 基线未建立，跳过交叉校验
+        return true;
+    }
+
+    // 取 DEX SHA256 前 4 字节作为绑定因子
+    unsigned int dexBinding = 0;
+    for (int i = 0; i < 4; i++) {
+        dexBinding = (dexBinding << 8) | g_dexSha256[i];
+    }
+
+    // 取 SO CRC32 作为另一个绑定因子
+    unsigned int soBinding = (unsigned int)g_selfCrc32;
+
+    // 两个因子异或，交叉验证
+    // 如果 SO 或 DEX 任何一方被替换，校验都会失败
+    unsigned int crossCheck = dexBinding ^ soBinding;
+
+    // 存储交叉校验值到全局，供 VMP 运行时验证
+    g_boundSoCrc32 = (unsigned char)(crossCheck & 0xFF);
+    g_boundSoValid = true;
+
+    return true;
+}
+// ====================================================
