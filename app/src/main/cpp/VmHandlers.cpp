@@ -126,40 +126,16 @@ static jlong doubleToLongBits(jdouble value) {
     memcpy(&result, &value, sizeof(jlong));
     return result;
 }
-static jfloat vmIntBitsToFloatValue(jint value) {
-    jfloat result;
-    memcpy(&result, &value, sizeof(jfloat));
-    return result;
-}
 
-static jint vmFloatToIntBitsValue(jfloat value) {
-    jint result;
-    memcpy(&result, &value, sizeof(jint));
-    return result;
-}
-static jfloat VmBitsToFloatForConvert(jint value) {
-    jfloat result = 0;
-    memcpy(&result, &value, sizeof(jfloat));
-    return result;
-}
 
-static jint VmFloatToBitsForConvert(jfloat value) {
-    jint result = 0;
-    memcpy(&result, &value, sizeof(jint));
-    return result;
-}
 
-static jdouble VmBitsToDoubleForConvert(jlong value) {
-    jdouble result = 0;
-    memcpy(&result, &value, sizeof(jdouble));
-    return result;
-}
 
-static jlong VmDoubleToBitsForConvert(jdouble value) {
-    jlong result = 0;
-    memcpy(&result, &value, sizeof(jlong));
-    return result;
-}
+
+
+
+
+
+
 static jclass findClassByTypeWithClassLoaderObject(JNIEnv *env, jobject classLoader, const std::string &type) {
     if (env == nullptr || classLoader == nullptr || type.empty()) {
         return nullptr;
@@ -400,60 +376,9 @@ static void logAndClearJavaException(JNIEnv *env, const char *tag) {
         env->ReleaseStringUTFChars(message, msg);
     }
 }
-static std::vector<std::string> parseMethodParamTypesFromSignature(const std::string &signature) {
-    std::vector<std::string> result;
 
-    size_t start = signature.find('(');
-    size_t end = signature.find(')');
 
-    if (start == std::string::npos || end == std::string::npos || end <= start) {
-        return result;
-    }
 
-    size_t i = start + 1;
-    while (i < end) {
-        char c = signature[i];
-
-        if (c == 'L') {
-            size_t semi = signature.find(';', i);
-            if (semi == std::string::npos || semi > end) {
-                break;
-            }
-            result.push_back(signature.substr(i, semi - i + 1));
-            i = semi + 1;
-        } else if (c == '[') {
-            size_t arrayStart = i;
-            while (i < end && signature[i] == '[') {
-                i++;
-            }
-
-            if (i < end && signature[i] == 'L') {
-                size_t semi = signature.find(';', i);
-                if (semi == std::string::npos || semi > end) {
-                    break;
-                }
-                result.push_back(signature.substr(arrayStart, semi - arrayStart + 1));
-                i = semi + 1;
-            } else {
-                result.push_back(signature.substr(arrayStart, i - arrayStart + 1));
-                i++;
-            }
-        } else {
-            result.push_back(signature.substr(i, 1));
-            i++;
-        }
-    }
-
-    return result;
-}
-
-static std::string getMethodReturnTypeFromSignature(const std::string &signature) {
-    size_t end = signature.find(')');
-    if (end == std::string::npos || end + 1 >= signature.length()) {
-        return "";
-    }
-    return signature.substr(end + 1);
-}
 
 static bool buildJValuesFromRegisters(
         VmContext &ctx,
@@ -511,118 +436,10 @@ static bool buildJValuesFromRegisters(
 
     return true;
 }
-static std::vector<std::string> parseMethodParamTypes(const std::string &signature) {
-    std::vector<std::string> result;
 
-    size_t start = signature.find('(');
-    size_t end = signature.find(')');
 
-    if (start == std::string::npos || end == std::string::npos || end <= start) {
-        return result;
-    }
 
-    size_t i = start + 1;
-    while (i < end) {
-        char c = signature[i];
 
-        if (c == 'L') {
-            size_t semi = signature.find(';', i);
-            if (semi == std::string::npos || semi > end) {
-                break;
-            }
-
-            result.push_back(signature.substr(i, semi - i + 1));
-            i = semi + 1;
-        } else if (c == '[') {
-            size_t arrayStart = i;
-            while (i < end && signature[i] == '[') {
-                i++;
-            }
-
-            if (i < end && signature[i] == 'L') {
-                size_t semi = signature.find(';', i);
-                if (semi == std::string::npos || semi > end) {
-                    break;
-                }
-
-                result.push_back(signature.substr(arrayStart, semi - arrayStart + 1));
-                i = semi + 1;
-            } else if (i < end) {
-                result.push_back(signature.substr(arrayStart, i - arrayStart + 1));
-                i++;
-            }
-        } else {
-            result.push_back(signature.substr(i, 1));
-            i++;
-        }
-    }
-
-    return result;
-}
-
-static bool parseMethodParameterTypes(const std::string &signature, std::vector<std::string> &outTypes) {
-    outTypes.clear();
-
-    size_t start = signature.find('(');
-    size_t end = signature.find(')');
-
-    if (start == std::string::npos || end == std::string::npos || end <= start) {
-        return false;
-    }
-
-    size_t i = start + 1;
-
-    while (i < end) {
-        char c = signature[i];
-
-        if (c == 'L') {
-            size_t semicolon = signature.find(';', i);
-            if (semicolon == std::string::npos || semicolon > end) {
-                return false;
-            }
-
-            outTypes.push_back(signature.substr(i, semicolon - i + 1));
-            i = semicolon + 1;
-        } else if (c == '[') {
-            size_t arrayStart = i;
-
-            while (i < end && signature[i] == '[') {
-                i++;
-            }
-
-            if (i >= end) {
-                return false;
-            }
-
-            if (signature[i] == 'L') {
-                size_t semicolon = signature.find(';', i);
-                if (semicolon == std::string::npos || semicolon > end) {
-                    return false;
-                }
-
-                outTypes.push_back(signature.substr(arrayStart, semicolon - arrayStart + 1));
-                i = semicolon + 1;
-            } else {
-                outTypes.push_back(signature.substr(arrayStart, i - arrayStart + 1));
-                i++;
-            }
-        } else {
-            outTypes.push_back(signature.substr(i, 1));
-            i++;
-        }
-    }
-
-    return true;
-}
-
-static std::string getMethodReturnType(const std::string &signature) {
-    size_t end = signature.find(')');
-    if (end == std::string::npos || end + 1 >= signature.length()) {
-        return "";
-    }
-
-    return signature.substr(end + 1);
-}
 
 static jclass findClassByType(JNIEnv *env, const std::string &type) {
     if (type.empty()) {
@@ -644,96 +461,7 @@ static jclass findClassByType(JNIEnv *env, const std::string &type) {
     return cls;
 }
 
-static jclass findClassByTypeWithObjectLoader(JNIEnv *env, jobject obj, const std::string &type) {
-    if (env == nullptr || type.empty()) {
-        return nullptr;
-    }
 
-    std::string name = type;
-
-    if (name[0] == 'L' && name[name.length() - 1] == ';') {
-        name = name.substr(1, name.length() - 2);
-    }
-
-    std::string dotName = name;
-    for (size_t i = 0; i < dotName.length(); i++) {
-        if (dotName[i] == '/') {
-            dotName[i] = '.';
-        }
-    }
-
-    jclass cls = env->FindClass(name.c_str());
-    if (env->ExceptionCheck()) {
-        env->ExceptionClear();
-    }
-
-    if (cls != nullptr) {
-        return cls;
-    }
-
-    if (obj == nullptr) {
-        return nullptr;
-    }
-
-    jclass objClass = env->GetObjectClass(obj);
-    if (env->ExceptionCheck() || objClass == nullptr) {
-        env->ExceptionClear();
-        return nullptr;
-    }
-
-    jclass classClass = env->FindClass("java/lang/Class");
-    if (env->ExceptionCheck() || classClass == nullptr) {
-        env->ExceptionClear();
-        return nullptr;
-    }
-
-    jmethodID getClassLoaderMethod = env->GetMethodID(
-            classClass,
-            "getClassLoader",
-            "()Ljava/lang/ClassLoader;"
-    );
-
-    if (env->ExceptionCheck() || getClassLoaderMethod == nullptr) {
-        env->ExceptionClear();
-        return nullptr;
-    }
-
-    jobject classLoader = env->CallObjectMethod(objClass, getClassLoaderMethod);
-    if (env->ExceptionCheck() || classLoader == nullptr) {
-        env->ExceptionClear();
-        return nullptr;
-    }
-
-    jclass classLoaderClass = env->FindClass("java/lang/ClassLoader");
-    if (env->ExceptionCheck() || classLoaderClass == nullptr) {
-        env->ExceptionClear();
-        return nullptr;
-    }
-
-    jmethodID loadClassMethod = env->GetMethodID(
-            classLoaderClass,
-            "loadClass",
-            "(Ljava/lang/String;)Ljava/lang/Class;"
-    );
-
-    if (env->ExceptionCheck() || loadClassMethod == nullptr) {
-        env->ExceptionClear();
-        return nullptr;
-    }
-
-    jstring className = env->NewStringUTF(dotName.c_str());
-    if (className == nullptr) {
-        return nullptr;
-    }
-
-    jobject loadedClass = env->CallObjectMethod(classLoader, loadClassMethod, className);
-    if (env->ExceptionCheck() || loadedClass == nullptr) {
-        env->ExceptionClear();
-        return nullptr;
-    }
-
-    return static_cast<jclass>(loadedClass);
-}
 
 static bool parseMethodReference(
         const std::string &ref,
@@ -807,7 +535,7 @@ static jclass findVmClassForObject(
 
     // 2. 用对�?ClassLoader 加载声明�?
     if (cls == nullptr && obj != nullptr) {
-        cls = findClassByTypeWithObjectLoader(env, obj, classType);
+        cls = findClassByType(env, obj, classType);
     }
 
     // 3. �?Runtime Context �?ClassLoader
@@ -1708,7 +1436,7 @@ bool VmHandleNewInstance(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForStatic(ctx.env, insn.referenceData);
 
     if (cls == nullptr && loaderBaseObj != nullptr) {
-        cls = findClassByTypeWithObjectLoader(ctx.env, loaderBaseObj, insn.referenceData);
+        cls = findClassByType(ctx.env, loaderBaseObj, insn.referenceData);
     }
     if (cls == nullptr) {
         LOGE("NEW_INSTANCE 找不到类�?s", insn.referenceData.c_str());
@@ -5090,7 +4818,7 @@ bool VmHandleSputObject(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForStatic(ctx.env, classType);
 
     if (cls == nullptr && loaderBaseObj != nullptr) {
-        cls = findClassByTypeWithObjectLoader(ctx.env, loaderBaseObj, classType);
+        cls = findClassByType(ctx.env, loaderBaseObj, classType);
     }
 
     if (cls == nullptr) {
@@ -5306,60 +5034,7 @@ bool VmHandleSputShort(VmContext &ctx, const VmpInstruction &insn) {
     ctx.pc++;
     return true;
 }
-static std::vector<std::string> parseParamTypesFromSignature(const std::string &signature) {
-    std::vector<std::string> result;
 
-    size_t start = signature.find('(');
-    size_t end = signature.find(')');
-
-    if (start == std::string::npos || end == std::string::npos || end <= start) {
-        return result;
-    }
-
-    size_t i = start + 1;
-
-    while (i < end) {
-        char c = signature[i];
-
-        if (c == 'Z' || c == 'B' || c == 'S' || c == 'C' ||
-            c == 'I' || c == 'J' || c == 'F' || c == 'D') {
-            result.push_back(signature.substr(i, 1));
-            i++;
-        } else if (c == 'L') {
-            size_t semi = signature.find(';', i);
-            if (semi == std::string::npos || semi > end) {
-                break;
-            }
-            result.push_back(signature.substr(i, semi - i + 1));
-            i = semi + 1;
-        } else if (c == '[') {
-            size_t arrayStart = i;
-            while (i < end && signature[i] == '[') {
-                i++;
-            }
-
-            if (i >= end) {
-                break;
-            }
-
-            if (signature[i] == 'L') {
-                size_t semi = signature.find(';', i);
-                if (semi == std::string::npos || semi > end) {
-                    break;
-                }
-                result.push_back(signature.substr(arrayStart, semi - arrayStart + 1));
-                i = semi + 1;
-            } else {
-                result.push_back(signature.substr(arrayStart, i - arrayStart + 1));
-                i++;
-            }
-        } else {
-            break;
-        }
-    }
-
-    return result;
-}
 
 
 //指令 INVOKE
@@ -5409,7 +5084,7 @@ bool VmHandleInvokeCommon(VmContext &ctx, const VmpInstruction &insn) {
         }
     }
 
-    std::vector<std::string> paramTypes = parseParamTypesFromSignature(signature);
+    std::vector<std::string> paramTypes = parseMethodParameterTypes(signature);
     std::vector<jvalue> args;
 
     if (!buildJValueArgs(ctx, insn, paramTypes, args)) {
@@ -5536,7 +5211,7 @@ bool VmHandleInvokeDirect(VmContext &ctx, const VmpInstruction &insn) {
         }
     }
 
-    std::vector<std::string> paramTypes = parseParamTypesFromSignature(signature);
+    std::vector<std::string> paramTypes = parseMethodParameterTypes(signature);
     std::vector<jvalue> args;
 
     if (!buildJValueArgs(ctx, insn, paramTypes, args)) {
@@ -5649,7 +5324,7 @@ bool VmHandleInvokeSuper(VmContext &ctx, const VmpInstruction &insn) {
     jclass superCls = findVmClassForStatic(ctx.env, classType);
 
     if (superCls == nullptr && loaderBaseObj != nullptr) {
-        superCls = findClassByTypeWithObjectLoader(ctx.env, loaderBaseObj, classType);
+        superCls = findClassByType(ctx.env, loaderBaseObj, classType);
     }
 
     if (superCls == nullptr) {
@@ -5775,7 +5450,7 @@ bool VmHandleInvokeInterface(VmContext &ctx, const VmpInstruction &insn) {
         }
     }
 
-    std::vector<std::string> paramTypes = parseMethodParamTypes(signature);
+    std::vector<std::string> paramTypes = parseMethodParameterTypes(signature);
     std::string returnType = parseMethodReturnType(signature);
 
     if (insn.registers.size() - 1 < paramTypes.size()) {
@@ -6014,7 +5689,7 @@ bool VmHandleInvokeSuperRange(VmContext &ctx, const VmpInstruction &insn) {
     jclass superCls = findVmClassForStatic(ctx.env, classType);
 
     if (superCls == nullptr && loaderBaseObj != nullptr) {
-        superCls = findClassByTypeWithObjectLoader(ctx.env, loaderBaseObj, classType);
+        superCls = findClassByType(ctx.env, loaderBaseObj, classType);
     }
 
     if (superCls == nullptr) {
@@ -6128,7 +5803,7 @@ bool VmHandleInvokeStaticRange(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForStatic(ctx.env, classType);
 
     if (cls == nullptr && loaderBaseObj != nullptr) {
-        cls = findClassByTypeWithObjectLoader(ctx.env, loaderBaseObj, classType);
+        cls = findClassByType(ctx.env, loaderBaseObj, classType);
     }
     if (cls == nullptr) {
         LOGE("INVOKE_STATIC_RANGE 找不到类�?s", classType.c_str());
@@ -6142,14 +5817,14 @@ bool VmHandleInvokeStaticRange(VmContext &ctx, const VmpInstruction &insn) {
         return false;
     }
 
-    std::vector<std::string> paramTypes = parseMethodParamTypesFromSignature(signature);
+    std::vector<std::string> paramTypes = parseMethodParameterTypes(signature);
     std::vector<jvalue> args;
 
     if (!buildJValuesFromRegisters(ctx, paramTypes, insn.registers, 0, args)) {
         return false;
     }
 
-    std::string returnType = getMethodReturnTypeFromSignature(signature);
+    std::string returnType = parseMethodReturnType(signature);
 
     ctx.lastResultObject = nullptr;
     ctx.lastResultInt = 0;
@@ -6243,14 +5918,14 @@ bool VmHandleInvokeInterfaceRange(VmContext &ctx, const VmpInstruction &insn) {
         }
     }
 
-    std::vector<std::string> paramTypes = parseMethodParamTypesFromSignature(signature);
+    std::vector<std::string> paramTypes = parseMethodParameterTypes(signature);
     std::vector<jvalue> args;
 
     if (!buildJValuesFromRegisters(ctx, paramTypes, insn.registers, 1, args)) {
         return false;
     }
 
-    std::string returnType = getMethodReturnTypeFromSignature(signature);
+    std::string returnType = parseMethodReturnType(signature);
 
     ctx.lastResultObject = nullptr;
     ctx.lastResultInt = 0;
@@ -6641,7 +6316,7 @@ bool VmHandleFloatToLong(VmContext &ctx, const VmpInstruction &insn) {
     int dst = insn.registers[0];
     int src = insn.registers[1];
 
-    jfloat srcValue = VmBitsToFloatForConvert(ctx.regs[src].intValue);
+    jfloat srcValue = intBitsToFloat(ctx.regs[src].intValue);
     jlong result = static_cast<jlong>(srcValue);
 
     ctx.regs[dst].longValue = result;
@@ -6664,9 +6339,9 @@ bool VmHandleFloatToDouble(VmContext &ctx, const VmpInstruction &insn) {
     int dst = insn.registers[0];
     int src = insn.registers[1];
 
-    jfloat srcValue = VmBitsToFloatForConvert(ctx.regs[src].intValue);
+    jfloat srcValue = intBitsToFloat(ctx.regs[src].intValue);
     jdouble resultDouble = static_cast<jdouble>(srcValue);
-    jlong resultBits = VmDoubleToBitsForConvert(resultDouble);
+    jlong resultBits = doubleToLongBits(resultDouble);
 
     ctx.regs[dst].longValue = resultBits;
     ctx.regs[dst].intValue = static_cast<jint>(resultBits);
@@ -6688,7 +6363,7 @@ bool VmHandleDoubleToInt(VmContext &ctx, const VmpInstruction &insn) {
     int dst = insn.registers[0];
     int src = insn.registers[1];
 
-    jdouble srcValue = VmBitsToDoubleForConvert(ctx.regs[src].longValue);
+    jdouble srcValue = longBitsToDouble(ctx.regs[src].longValue);
     jint result = static_cast<jint>(srcValue);
 
     ctx.regs[dst].intValue = result;
@@ -6711,7 +6386,7 @@ bool VmHandleDoubleToLong(VmContext &ctx, const VmpInstruction &insn) {
     int dst = insn.registers[0];
     int src = insn.registers[1];
 
-    jdouble srcValue = VmBitsToDoubleForConvert(ctx.regs[src].longValue);
+    jdouble srcValue = longBitsToDouble(ctx.regs[src].longValue);
     jlong result = static_cast<jlong>(srcValue);
 
     ctx.regs[dst].longValue = result;
@@ -6734,9 +6409,9 @@ bool VmHandleDoubleToFloat(VmContext &ctx, const VmpInstruction &insn) {
     int dst = insn.registers[0];
     int src = insn.registers[1];
 
-    jdouble srcValue = VmBitsToDoubleForConvert(ctx.regs[src].longValue);
+    jdouble srcValue = longBitsToDouble(ctx.regs[src].longValue);
     jfloat resultFloat = static_cast<jfloat>(srcValue);
-    jint resultBits = VmFloatToBitsForConvert(resultFloat);
+    jint resultBits = floatToIntBits(resultFloat);
 
     ctx.regs[dst].intValue = resultBits;
     ctx.regs[dst].longValue = resultBits;
@@ -7362,11 +7037,11 @@ bool VmHandleAddFloat(VmContext &ctx, const VmpInstruction &insn) {
     int src1 = insn.registers[1];
     int src2 = insn.registers[2];
 
-    jfloat left = vmIntBitsToFloatValue(ctx.regs[src1].intValue);
-    jfloat right = vmIntBitsToFloatValue(ctx.regs[src2].intValue);
+    jfloat left = intBitsToFloat(ctx.regs[src1].intValue);
+    jfloat right = intBitsToFloat(ctx.regs[src2].intValue);
     jfloat result = left + right;
 
-    ctx.regs[dst].intValue = vmFloatToIntBitsValue(result);
+    ctx.regs[dst].intValue = floatToIntBits(result);
     ctx.regs[dst].longValue = ctx.regs[dst].intValue;
     ctx.regs[dst].objectValue = nullptr;
 
@@ -7387,11 +7062,11 @@ bool VmHandleSubFloat(VmContext &ctx, const VmpInstruction &insn) {
     int src1 = insn.registers[1];
     int src2 = insn.registers[2];
 
-    jfloat left = vmIntBitsToFloatValue(ctx.regs[src1].intValue);
-    jfloat right = vmIntBitsToFloatValue(ctx.regs[src2].intValue);
+    jfloat left = intBitsToFloat(ctx.regs[src1].intValue);
+    jfloat right = intBitsToFloat(ctx.regs[src2].intValue);
     jfloat result = left - right;
 
-    ctx.regs[dst].intValue = vmFloatToIntBitsValue(result);
+    ctx.regs[dst].intValue = floatToIntBits(result);
     ctx.regs[dst].longValue = ctx.regs[dst].intValue;
     ctx.regs[dst].objectValue = nullptr;
 
@@ -7412,11 +7087,11 @@ bool VmHandleMulFloat(VmContext &ctx, const VmpInstruction &insn) {
     int src1 = insn.registers[1];
     int src2 = insn.registers[2];
 
-    jfloat left = vmIntBitsToFloatValue(ctx.regs[src1].intValue);
-    jfloat right = vmIntBitsToFloatValue(ctx.regs[src2].intValue);
+    jfloat left = intBitsToFloat(ctx.regs[src1].intValue);
+    jfloat right = intBitsToFloat(ctx.regs[src2].intValue);
     jfloat result = left * right;
 
-    ctx.regs[dst].intValue = vmFloatToIntBitsValue(result);
+    ctx.regs[dst].intValue = floatToIntBits(result);
     ctx.regs[dst].longValue = ctx.regs[dst].intValue;
     ctx.regs[dst].objectValue = nullptr;
 
@@ -7437,11 +7112,11 @@ bool VmHandleDivFloat(VmContext &ctx, const VmpInstruction &insn) {
     int src1 = insn.registers[1];
     int src2 = insn.registers[2];
 
-    jfloat left = vmIntBitsToFloatValue(ctx.regs[src1].intValue);
-    jfloat right = vmIntBitsToFloatValue(ctx.regs[src2].intValue);
+    jfloat left = intBitsToFloat(ctx.regs[src1].intValue);
+    jfloat right = intBitsToFloat(ctx.regs[src2].intValue);
     jfloat result = left / right;
 
-    ctx.regs[dst].intValue = vmFloatToIntBitsValue(result);
+    ctx.regs[dst].intValue = floatToIntBits(result);
     ctx.regs[dst].longValue = ctx.regs[dst].intValue;
     ctx.regs[dst].objectValue = nullptr;
 
@@ -7462,11 +7137,11 @@ bool VmHandleRemFloat(VmContext &ctx, const VmpInstruction &insn) {
     int src1 = insn.registers[1];
     int src2 = insn.registers[2];
 
-    jfloat left = vmIntBitsToFloatValue(ctx.regs[src1].intValue);
-    jfloat right = vmIntBitsToFloatValue(ctx.regs[src2].intValue);
+    jfloat left = intBitsToFloat(ctx.regs[src1].intValue);
+    jfloat right = intBitsToFloat(ctx.regs[src2].intValue);
     jfloat result = fmodf(left, right);
 
-    ctx.regs[dst].intValue = vmFloatToIntBitsValue(result);
+    ctx.regs[dst].intValue = floatToIntBits(result);
     ctx.regs[dst].longValue = ctx.regs[dst].intValue;
     ctx.regs[dst].objectValue = nullptr;
 
@@ -9900,7 +9575,8 @@ bool VmHandleInvokeDirectRange(VmContext &ctx, const VmpInstruction &insn) {
     }
 
     std::vector<std::string> paramTypes;
-    if (!parseMethodParameterTypes(signature, paramTypes)) {
+    std::vector<std::string> paramTypes = parseMethodParameterTypes(signature);
+    if (paramTypes.empty() && !signature.empty()) {
         LOGE("INVOKE_DIRECT_RANGE 参数签名解析失败�?s", signature.c_str());
         return false;
     }
@@ -9957,7 +9633,7 @@ bool VmHandleInvokeDirectRange(VmContext &ctx, const VmpInstruction &insn) {
     ctx.lastResultInt = 0;
     ctx.lastResultLong = 0;
 
-    std::string returnType = getMethodReturnType(signature);
+    std::string returnType = parseMethodReturnType(signature);
     jvalue *argPtr = args.empty() ? nullptr : args.data();
 
     if (returnType == "V") {
@@ -10034,7 +9710,7 @@ bool VmHandleInvokeStatic(VmContext &ctx, const VmpInstruction &insn) {
         return false;
     }
 
-    std::vector<std::string> paramTypes = parseMethodParamTypes(signature);
+    std::vector<std::string> paramTypes = parseMethodParameterTypes(signature);
     std::string returnType = parseMethodReturnType(signature);
 
     if (insn.registers.size() < paramTypes.size()) {

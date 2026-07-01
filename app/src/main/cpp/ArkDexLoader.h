@@ -3,6 +3,8 @@
 
 #include <jni.h>
 
+#include "ArkDexBlock.h"
+
 typedef bool (*ArkDexLoaderFunc)(JNIEnv *env, jobject context);
 
 bool LoaderDEX(JNIEnv *env, jobject context);

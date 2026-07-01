@@ -8,10 +8,12 @@ add_library(
         ArkStub.cpp
         sha256.cpp
         ArkDexLoader.cpp
+        ArkDexBlock.cpp
         ArkEnvGuard.cpp
         ArkSelfHash.cpp
         ArkVMP.cpp
         ArkAntiDebug.cpp
+        ArkIntegrity.cpp
         VmpRuntime.cpp
         VmpParser.cpp
         VmpInterpreter.cpp
@@ -61,6 +63,7 @@ add_library(
         ArkTool
         SHARED
         ArkTool.cpp
+        ArkCrypto.cpp
 )
 
 target_compile_options(

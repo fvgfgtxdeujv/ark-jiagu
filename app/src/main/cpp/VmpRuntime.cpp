@@ -2,6 +2,7 @@
 #include "VmpParser.h"
 #include "VmpInterpreter.h"
 #include "ArkAntiDebug.h"
+#include "ArkIntegrity.h"
 #include <android/log.h>
 
 #define LOG_TAG "ArkVMP_VmpRuntime"
