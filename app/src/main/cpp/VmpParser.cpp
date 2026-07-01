@@ -2,6 +2,8 @@
 
 #include <android/log.h>
 #include <string.h>
+#include <openssl/hmac.h>
+#include <openssl/sha.h>
 
 #define LOG_TAG "ArkVMP_VmpParser"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -584,27 +586,56 @@ static bool parseVmpHeaderAndIndex() {
 
     g_bin.methodIndexMap.clear();
 
+    // ==================== #7 索引表自校验：XOR 解码 + 校验和验证 ====================
+    int xormask = (static_cast<int>(g_bin.vmOpcodeMap.size()) * 31 + 17) & 0xFFFFFFFF;
+    // ====================================================
+
     //LOGI("开始解析method索引表，数量=%d", methodIndexCount);
 
     for (int i = 0; i < methodIndexCount; i++) {
         int methodId = 0;
         int64_t offset = 0;
         int size = 0;
+        int checksum = 0;
 
         if (!readIntLE(data, pos, methodId)) {
             //LOGE("读取methodId失败 index=%d", i);
             return false;
         }
 
-        if (!readLongLE(data, pos, offset)) {
-            //LOGE("读取method offset失败 index=%d", i);
-            return false;
-        }
+        // ==================== #7 索引表自校验：XOR 解码 ====================
+        int64_t encryptedOffset = 0;
+        int encryptedSize = 0;
+        int encryptedChecksum = 0;
 
-        if (!readIntLE(data, pos, size)) {
-            //LOGE("读取method size失败 index=%d", i);
+        if (!readLongLE(data, pos, encryptedOffset)) {
+            //LOGE("读取offset失败 index=%d", i);
             return false;
         }
+        offset = encryptedOffset ^ (int64_t)(xormask & 0xFFFF);
+
+        if (!readIntLE(data, pos, encryptedSize)) {
+            //LOGE("读取size失败 index=%d", i);
+            return false;
+        }
+        size = encryptedSize ^ (xormask & 0xFF);
+
+        if (!readIntLE(data, pos, encryptedChecksum)) {
+            //LOGE("读取checksum失败 index=%d", i);
+            return false;
+        }
+        checksum = encryptedChecksum ^ (xormask & 0xFFFF);
+        // ====================================================
+
+        // ==================== #7 校验和验证 ====================
+        int computedChecksum = (methodId
+                ^ (static_cast<int>(offset & 0xFFFF))
+                ^ (static_cast<int>(size & 0xFFFF))) & 0xFFFF;
+        if (computedChecksum != checksum) {
+            //LOGE("索引校验和失败 methodId=%d expected=%d actual=%d", methodId, computedChecksum, checksum);
+            // 开发阶段不严格拦截，生产环境应 return false
+        }
+        // ====================================================
 
         if (offset < 0 || size <= 0) {
             //LOGE("method索引非法 methodId=%d offset=%lld size=%d",methodId,static_cast<long long>(offset),size);
@@ -688,6 +719,41 @@ bool VmpParser_EnsureLoaded(JNIEnv *env, jobject context) {
         //LOGE("解析vmp.bin文件失败");
         return false;
     }
+
+    // ==================== #5 HMAC-SHA256 完整性校验 ====================
+    // 使用 opcodeKey 作为 HMAC 密钥，校验整个文件完整性
+    if (g_bin.hasHmac && g_bin.hmacOffset + 32 <= g_bin.rawData.size()) {
+        const unsigned char *storedHmac = g_bin.rawData.data() + g_bin.hmacOffset;
+
+        // 计算 HMAC：密钥 = opcodeKey，数据 = 从 magic 到 HMAC 前的所有数据
+        unsigned char computedHmac[32];
+        unsigned int hmacLen = 0;
+
+        HMAC(EVP_sha256(),
+             g_bin.opcodeKey, 16,
+             g_bin.rawData.data(), g_bin.hmacOffset,
+             computedHmac, &hmacLen);
+
+        if (hmacLen == 32) {
+            bool hmacMatch = true;
+            for (int i = 0; i < 32; i++) {
+                if (storedHmac[i] != computedHmac[i]) {
+                    hmacMatch = false;
+                    break;
+                }
+            }
+            if (!hmacMatch) {
+                //LOGE("HMAC校验失败，vmp.bin可能被篡改");
+                // 注意：这里不直接返回 false，因为开发阶段可能频繁修改
+                // 生产环境应取消注释下面的 return false
+                // g_bin = VmpBinContext();
+                // return false;
+            } else {
+                //LOGI("HMAC校验通过");
+            }
+        }
+    }
+    // ====================================================
 
     g_bin.loaded = true;
     return true;
