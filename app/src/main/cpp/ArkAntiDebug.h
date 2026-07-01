@@ -19,6 +19,12 @@ bool ArkAntiDebug_CheckAll(JNIEnv *env);
  */
 bool checkSelfIntegrity();
 
+/**
+ * DEX 完整性校验：计算 VMP 类所在 DEX 的 SHA256 并校验
+ * 返回 true 表示 DEX 未被篡改
+ */
+bool checkDexIntegrity(JNIEnv *env);
+
 #ifdef __cplusplus
 }
 #endif

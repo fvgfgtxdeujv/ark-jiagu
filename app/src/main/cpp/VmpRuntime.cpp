@@ -95,6 +95,18 @@ VmResult VmpRuntime_Execute(
     }
     // ====================================================
 
+    // ==================== DEX 完整性校验（魔改#10） ====================
+    // 每执行 500 次校验一次 DEX
+    static int dexCheckCounter = 0;
+    if (++dexCheckCounter >= 500) {
+        dexCheckCounter = 0;
+        if (!checkDexIntegrity(env)) {
+            LOGE("DEX完整性校验失败，终止VMP执行");
+            return result;
+        }
+    }
+    // ====================================================
+
     jsize argCount = 0;
     if (args != nullptr) {
         argCount = env->GetArrayLength(args);
