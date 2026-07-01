@@ -31,6 +31,12 @@ struct VmContext {
     jobject thiz = nullptr;
     jobjectArray args = nullptr;
 
+    // ==================== 栈混淆：寄存器别名（魔改#16） ====================
+    // 运行时动态映射：logicalReg -> physicalReg
+    // 每次方法执行生成不同的映射，使静态分析无法追踪寄存器流向
+    std::vector<int> regPerm;
+    // ====================================================
+
     std::vector<VmRegister> regs;
 
     jobject lastResultObject = nullptr;
@@ -68,5 +74,10 @@ int VmContext_FindInstructionIndexByOffset(
         VmContext &ctx,
         int codeUnitOffset
 );
+
+// ==================== 寄存器混淆辅助（魔改#16） ====================
+// 将逻辑寄存器索引映射到物理寄存器索引
+// 用于运行时动态混淆寄存器分配
+int VmContext_GetPhysicalReg(const VmContext &ctx, int logicalReg);
 
 #endif
