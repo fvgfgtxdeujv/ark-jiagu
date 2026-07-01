@@ -114,6 +114,11 @@ struct VmpBinContext {
     std::unordered_map<int, VmpMethodIndex> methodIndexMap;
 
     std::unordered_map<int, VmpMethod> method_cache;
+
+    // ==================== #5 HMAC-SHA256 ====================
+    size_t hmacOffset = 0;
+    bool hasHmac = false;
+    // ====================================================
 };
 
 #endif

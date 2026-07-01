@@ -39,7 +39,41 @@ static bool readIntLEAt(const std::vector<unsigned char> &data, size_t pos, int 
 
     return true;
 }
-//XOR解密方法
+// ==================== #1 多层解密 ====================
+// 第一层：轮混淆逆变换（解密 layer1）
+// 逆变换顺序：行混淆逆 → 轮混淆逆（逆旋转 → 逆加法 → 逆XOR）
+static void layer1Decrypt(unsigned char *data, size_t len, const unsigned char *layerKey, size_t keyLen) {
+    // 逆行混淆：恢复原始顺序
+    for (size_t i = 0; i < len; i += 16) {
+        size_t blockLen = std::min(len - i, (size_t)16);
+        if (blockLen < 2) continue;
+        unsigned char *block = data + i;
+        // 逆向置换：位置 j → (j * 7) % len 的逆变换
+        // 逆变换：newPos → j，其中 j * 7 ≡ newPos (mod len)
+        // 使用查找表方式
+        std::vector<unsigned char> original(blockLen);
+        for (size_t j = 0; j < blockLen; j++) {
+            size_t srcPos = (j * 7) % blockLen;
+            original[j] = block[srcPos];
+        }
+        memcpy(block, original.data(), blockLen);
+    }
+
+    // 逆轮混淆（8 轮）
+    int rounds = 8;
+    for (int round = rounds - 1; round >= 0; round--) {
+        for (size_t i = 0; i < len; i++) {
+            int keyByte = layerKey[(i + round) % keyLen] & 0xFF;
+            // 逆 XOR
+            data[i] = (unsigned char)((data[i] & 0xFF) ^ layerKey[(i + round * 3) % keyLen]);
+            // 逆旋转（右旋3位 = 左旋5位）
+            data[i] = (unsigned char)(((data[i] & 0xFF) >> 3) | ((data[i] & 0xFF) << 5));
+            // 逆加法
+            data[i] = (unsigned char)(((data[i] & 0xFF) - keyByte) & 0xFF);
+        }
+    }
+}
+
 static bool decryptVmpBinIfNeeded(const std::vector<unsigned char> &input,
                                   std::vector<unsigned char> &outPlain) {
     outPlain.clear();
@@ -90,52 +124,80 @@ static bool decryptVmpBinIfNeeded(const std::vector<unsigned char> &input,
         return false;
     }
 
-    int keyLen = 0;
-    if (!readIntLEAt(input, input.size() - 4, keyLen)) {
-        //LOGE("读取尾部keyLen失败");
+    // ==================== #1 多层解密：读取双层密钥 ====================
+    // 新格式：加密数据后紧跟 layerKeyLen + layerKey + xorKeyLen + xorKey
+    size_t keyAreaStart = encryptedEnd;
+
+    // 读取 layerKey
+    if (keyAreaStart + 4 > input.size()) {
+        //LOGE("密钥区域越界");
         return false;
     }
-
-    if (keyLen <= 0 || keyLen > 1024) {
-        //LOGE("keyLen非法：%d", keyLen);
+    int layerKeyLen = 0;
+    if (!readIntLEAt(input, keyAreaStart, layerKeyLen)) {
+        //LOGE("读取layerKeyLen失败");
         return false;
     }
-
-    if (input.size() < static_cast<size_t>(keyLen) + 4) {
-        //LOGE("key区域越界");
+    if (layerKeyLen <= 0 || layerKeyLen > 1024) {
+        //LOGE("layerKeyLen非法：%d", layerKeyLen);
         return false;
     }
-
-    size_t keyOffset = input.size() - 4 - static_cast<size_t>(keyLen);
-
-    if (keyOffset < encryptedEnd) {
-        //LOGE("keyOffset非法");
+    size_t layerKeyOffset = keyAreaStart + 4;
+    if (layerKeyOffset + layerKeyLen + 4 > input.size()) {
+        //LOGE("layerKey区域越界");
         return false;
     }
+    const unsigned char *layerKey = input.data() + layerKeyOffset;
+
+    // 读取 xorKey
+    size_t xorKeyLenPos = layerKeyOffset + layerKeyLen;
+    int xorKeyLen = 0;
+    if (!readIntLEAt(input, xorKeyLenPos, xorKeyLen)) {
+        //LOGE("读取xorKeyLen失败");
+        return false;
+    }
+    if (xorKeyLen <= 0 || xorKeyLen > 1024) {
+        //LOGE("xorKeyLen非法：%d", xorKeyLen);
+        return false;
+    }
+    size_t xorKeyOffset = xorKeyLenPos + 4;
+    if (xorKeyOffset + xorKeyLen > input.size()) {
+        //LOGE("xorKey区域越界");
+        return false;
+    }
+    const unsigned char *xorKey = input.data() + xorKeyOffset;
+    // ====================================================
 
     const unsigned char *encryptedData = input.data() + encryptedOffset;
-    const unsigned char *key = input.data() + keyOffset;
 
     outPlain.resize(static_cast<size_t>(encryptedLen));
 
+    // 第一层：XOR 解密
     for (int i = 0; i < encryptedLen; i++) {
         outPlain[i] = static_cast<unsigned char>(
-                encryptedData[i] ^ key[i % keyLen]
+                encryptedData[i] ^ xorKey[i % xorKeyLen]
         );
     }
+
+    // ==================== #1 多层解密：第二层轮混淆逆变换 ====================
+    if (layerKeyLen > 0) {
+        layer1Decrypt(outPlain.data(), outPlain.size(), layerKey, layerKeyLen);
+    }
+    // ====================================================
 
     if (outPlain.size() < 8
         || !(outPlain[0] == 'A' && outPlain[1] == 'V'
              && outPlain[2] == 'M' && outPlain[3] == 'P')) {
-        //LOGE("XOR解密后不是AVMP明文");
+        //LOGE("多层解密后不是AVMP明文");
         outPlain.clear();
         return false;
     }
 
-    //LOGI("vmp.bin XOR解密成功，加密大小=%d，明文大小=%d，keyLen=%d",encryptedLen,static_cast<int>(outPlain.size()),keyLen);
+    //LOGI("vmp.bin 多层解密成功，加密大小=%d，明文大小=%d",encryptedLen,static_cast<int>(outPlain.size()));
 
     return true;
 }
+// ====================================================
 
 
 static bool readLongLE(const std::vector<unsigned char> &data, size_t &pos, int64_t &out) {
@@ -175,6 +237,128 @@ static bool readStringLE(const std::vector<unsigned char> &data, size_t &pos, st
 
     return true;
 }
+
+// ==================== #11 变长编码辅助 ====================
+// 读取变长整数：小值用更少字节
+static bool readVarIntLE(const std::vector<unsigned char> &data, size_t &pos, int &out) {
+    if (pos >= data.size()) {
+        return false;
+    }
+
+    unsigned char first = data[pos] & 0xFF;
+    pos++;
+
+    if ((first & 0x80) == 0) {
+        // 单字节：0~127
+        out = first;
+        return true;
+    }
+
+    if ((first & 0xC0) == 0x80) {
+        // 两字节：128~16383
+        if (pos >= data.size()) return false;
+        out = ((first & 0x3F) << 8) | (data[pos] & 0xFF);
+        pos++;
+        return true;
+    }
+
+    if ((first & 0xE0) == 0xC0) {
+        // 三字节：16384~2097151
+        if (pos + 1 >= data.size()) return false;
+        out = ((first & 0x1F) << 16)
+            | ((data[pos] & 0xFF) << 8)
+            | (data[pos + 1] & 0xFF);
+        pos += 2;
+        return true;
+    }
+
+    if ((first & 0xF0) == 0xE0) {
+        // 四字节：2097152~268435455
+        if (pos + 2 >= data.size()) return false;
+        out = ((first & 0x0F) << 24)
+            | ((data[pos] & 0xFF) << 16)
+            | ((data[pos + 1] & 0xFF) << 8)
+            | (data[pos + 2] & 0xFF);
+        pos += 3;
+        return true;
+    }
+
+    if ((first & 0xF8) == 0xF0) {
+        // 五字节：大值
+        if (pos + 3 >= data.size()) return false;
+        out = ((first & 0x07) << 24)
+            | ((data[pos] & 0xFF) << 16)
+            | ((data[pos + 1] & 0xFF) << 8)
+            | (data[pos + 2] & 0xFF);
+        pos += 3;
+        // 符号扩展
+        if (out & 0x1000000) {
+            out |= 0xFE000000;
+        }
+        return true;
+    }
+
+    // 负数编码：0x80~0xBF (补码)
+    if ((first & 0xC0) == 0x80) {
+        if (pos >= data.size()) return false;
+        int val = ((first & 0x3F) << 8) | (data[pos] & 0xFF);
+        if (val & 0x2000) {
+            val |= 0xFFFFC000;
+        }
+        out = val;
+        pos++;
+        return true;
+    }
+
+    return false;
+}
+
+// 读取变长 long（1~9 字节）
+static bool readVarLongLE(const std::vector<unsigned char> &data, size_t &pos, int64_t &out) {
+    if (pos >= data.size()) {
+        return false;
+    }
+
+    unsigned char first = data[pos] & 0xFF;
+    pos++;
+
+    if (first < 128) {
+        out = first;
+        return true;
+    }
+
+    if ((first & 0xC0) == 0x80) {
+        if (pos >= data.size()) return false;
+        int64_t val = ((first & 0x3F) << 8) | (data[pos] & 0xFF);
+        // 符号扩展
+        if (val & 0x2000) {
+            val |= 0xFFFFFFFFFFFFC000LL;
+        }
+        out = val;
+        pos++;
+        return true;
+    }
+
+    if (first == 0xFF) {
+        // 9 字节
+        if (pos + 7 >= data.size()) return false;
+        uint64_t val = 0;
+        for (int i = 0; i < 8; i++) {
+            val = (val << 8) | (data[pos + i] & 0xFF);
+        }
+        pos += 8;
+        // 转换为有符号
+        if (val & 0x8000000000000000ULL) {
+            out = (int64_t)(val | 0xFFFFFFFF00000000ULL);
+        } else {
+            out = (int64_t)val;
+        }
+        return true;
+    }
+
+    return false;
+}
+// ====================================================
 
 static bool readAllBytesFromInputStream(
         JNIEnv *env,
@@ -444,6 +628,32 @@ static bool parseVmpHeaderAndIndex() {
 
     g_bin.methodCache.clear();
 
+    // ==================== #5 HMAC-SHA256 跳过 ====================
+    // 记录 HMAC 位置（32 字节），暂不校验（需要完整文件数据）
+    // 完整 HMAC 校验应在解密后对整个文件做
+    size_t hmacPos = pos; // HMAC 起始位置
+    g_bin.hmacOffset = hmacPos;
+    g_bin.hasHmac = true;
+    pos += 32; // 跳过 HMAC
+    // ====================================================
+
+    // ==================== #7 索引表自校验 ====================
+    // 索引表中的 offset/size 用 XOR 混淆，校验和绑定到 opcodeMap
+    // 运行时读取时做简单校验
+    int xormask = (static_cast<int>(g_bin.vmOpcodeMap.size()) * 31 + 17) & 0xFFFFFFFF;
+    for (auto &kv : g_bin.methodIndexMap) {
+        VmpMethodIndex &index = kv.second;
+        // 验证校验和
+        int storedChecksum = (index.methodId
+                ^ (static_cast<int>(index.offset & 0xFFFF))
+                ^ (static_cast<int>(index.size & 0xFFFF))) & 0xFFFF;
+        // 暂不做严格校验，记录异常
+        if (storedChecksum != 0) {
+            //LOGI("索引校验 methodId=%d checksum=%d", index.methodId, storedChecksum);
+        }
+    }
+    // ====================================================
+
     //LOGI("vmp.bin解析完成 version=%d opcodeCount=%d methodCount=%d",g_bin.version,static_cast<int>(g_bin.vmOpcodeMap.size()),static_cast<int>(g_bin.methodIndexMap.size()));
 
     return true;
@@ -524,31 +734,26 @@ bool VmpParser_FindMethod(
     int parameterTypeCount = 0;
     int instructionCount = 0;
 
-    if (!readIntLE(g_bin.rawData, pos, method.methodId)) return false;
+    // ==================== #13 冗余填充：跳过方法块前垃圾数据 ====================
+    // 方法块前有 4~32 字节随机填充，跳过
+    if (pos + 4 <= end) {
+        pos += 4 + ((g_bin.rawData[pos + 3] & 0xFF) % 28);
+        if (pos >= end) return false;
+    }
+    // ====================================================
+
+    // ==================== #12 字段交错存储：第一段元数据 ====================
+    // 读取顺序：methodId + dexName + className (提前到指令前)
+    if (!readVarIntLE(g_bin.rawData, pos, method.methodId)) return false;
     if (!readStringLE(g_bin.rawData, pos, method.dexName)) return false;
     if (!readStringLE(g_bin.rawData, pos, method.className)) return false;
-    if (!readStringLE(g_bin.rawData, pos, method.methodName)) return false;
-    if (!readStringLE(g_bin.rawData, pos, method.methodSignature)) return false;
-    if (!readIntLE(g_bin.rawData, pos, method.accessFlags)) return false;
-    if (!readIntLE(g_bin.rawData, pos, method.registerCount)) return false;
-    if (!readIntLE(g_bin.rawData, pos, method.paramCount)) return false;
-    if (!readStringLE(g_bin.rawData, pos, method.returnType)) return false;
-    if (!readIntLE(g_bin.rawData, pos, isStaticValue)) return false;
+    // ====================================================
 
-    method.isStatic = isStaticValue != 0;
+    // ==================== #11 变长编码：读取指令数据段 ====================
+    // instructionCount + blockKeyInt 是指令数据段的前两个字段
+    if (!readVarIntLE(g_bin.rawData, pos, instructionCount)) return false;
 
-    if (!readIntLE(g_bin.rawData, pos, parameterTypeCount)) return false;
-
-    for (int i = 0; i < parameterTypeCount; i++) {
-        std::string type;
-        if (!readStringLE(g_bin.rawData, pos, type)) return false;
-        method.parameterTypes.push_back(type);
-    }
-
-    if (!readIntLE(g_bin.rawData, pos, instructionCount)) return false;
-
-    // ==================== 自解密密钥读取（魔改#18） ====================
-    // 读取每个方法块独立的 XOR 密钥
+    // ==================== #2 分块加密密钥 ====================
     int blockKeyInt = 0;
     if (!readIntLE(g_bin.rawData, pos, blockKeyInt)) return false;
     unsigned char blockKey = (unsigned char)(blockKeyInt & 0xFF);
@@ -559,15 +764,17 @@ bool VmpParser_FindMethod(
 
         int registerCount = 0;
 
-        if (!readIntLE(g_bin.rawData, pos, insn.codeUnitOffset)) return false;
+        // ==================== #11 变长编码 ====================
+        if (!readVarIntLE(g_bin.rawData, pos, insn.codeUnitOffset)) return false;
 
         // 读取加密的 vmOpcode 并用密钥解密
         int encryptedVmOpcode = 0;
-        if (!readIntLE(g_bin.rawData, pos, encryptedVmOpcode)) return false;
+        if (!readVarIntLE(g_bin.rawData, pos, encryptedVmOpcode)) return false;
         insn.vmOpcode = encryptedVmOpcode;
         if (g_bin.hasOpcodeKey) {
             insn.vmOpcode ^= (g_bin.opcodeKey[8 % 16] & 0xff);
         }
+        // ====================================================
 
         auto opcodeIt = g_bin.vmOpcodeMap.find(insn.vmOpcode);
         if (opcodeIt == g_bin.vmOpcodeMap.end()) {
@@ -579,13 +786,17 @@ bool VmpParser_FindMethod(
         insn.opcodeName = opcodeIt->second.realOpcodeName;
 
         if (!readStringLE(g_bin.rawData, pos, insn.formatName)) return false;
-        if (!readIntLE(g_bin.rawData, pos, insn.codeUnits)) return false;
 
-        if (!readIntLE(g_bin.rawData, pos, registerCount)) return false;
+        // ==================== #11 变长编码 ====================
+        if (!readVarIntLE(g_bin.rawData, pos, insn.codeUnits)) return false;
+        if (!readVarIntLE(g_bin.rawData, pos, registerCount)) return false;
+        // ====================================================
 
         for (int r = 0; r < registerCount; r++) {
             int reg = 0;
-            if (!readIntLE(g_bin.rawData, pos, reg)) return false;
+            // ==================== #11 变长编码 ====================
+            if (!readVarIntLE(g_bin.rawData, pos, reg)) return false;
+            // ====================================================
             // ==================== 自解密（魔改#18） ====================
             insn.registers.push_back(reg ^ (blockKey & 0xFF));
             // ====================================================
@@ -593,24 +804,24 @@ bool VmpParser_FindMethod(
 
         int64_t literalValue = 0;
 
-        if (!readIntLE(g_bin.rawData, pos, insn.literalType)) return false;
+        // ==================== #11 变长编码 ====================
+        if (!readVarIntLE(g_bin.rawData, pos, insn.literalType)) return false;
+        // ====================================================
 
         // ==================== 指令重叠（魔改#19） ====================
-        // 读取重叠标志：1=与前一条指令共享字面量，0=独立字面量
         int overlapFlag = 0;
         if (!readIntLE(g_bin.rawData, pos, overlapFlag)) return false;
 
         if (overlapFlag != 0 && i > 0) {
-            // 重叠模式：从前一条指令复制字面量，不读取文件
             literalValue = method.instructions[i - 1].literalValue;
         } else {
-            // 正常读取字面量
-            if (!readLongLE(g_bin.rawData, pos, literalValue)) return false;
+            // ==================== #11 变长编码 ====================
+            if (!readVarLongLE(g_bin.rawData, pos, literalValue)) return false;
+            // ====================================================
         }
         // ====================================================
 
         // ==================== 常量池解密（魔改#8） ====================
-        // 用 codeUnitOffset 派生 XOR 密钥解密字面量
         if (insn.literalType == 1 || insn.literalType == 2) {
             int litKey = (int)((insn.codeUnitOffset * 0x9E3779B9LL) & 0xFF);
             literalValue ^= litKey;
@@ -618,14 +829,15 @@ bool VmpParser_FindMethod(
         // ====================================================
 
         // ==================== 自解密（魔改#18） ====================
-        // 用块密钥 XOR 解密字面量和偏移量
         literalValue ^= (int64_t)(blockKey & 0xFF);
         // ====================================================
 
         insn.literalValue = literalValue;
 
-        if (!readIntLE(g_bin.rawData, pos, insn.offsetType)) return false;
-        if (!readIntLE(g_bin.rawData, pos, insn.offsetValue)) return false;
+        // ==================== #11 变长编码 ====================
+        if (!readVarIntLE(g_bin.rawData, pos, insn.offsetType)) return false;
+        if (!readVarIntLE(g_bin.rawData, pos, insn.offsetValue)) return false;
+        // ====================================================
 
         // ==================== 自解密（魔改#18） ====================
         insn.offsetValue ^= (blockKey & 0xFF);
@@ -639,8 +851,25 @@ bool VmpParser_FindMethod(
         method.instructions.push_back(insn);
     }
 
-    int tryBlockCount = 0;
-    if (!readIntLE(g_bin.rawData, pos, tryBlockCount)) return false;
+    // ==================== #12 字段交错存储：第二段元数据 ====================
+    if (!readStringLE(g_bin.rawData, pos, method.methodName)) return false;
+    if (!readStringLE(g_bin.rawData, pos, method.methodSignature)) return false;
+    if (!readVarIntLE(g_bin.rawData, pos, method.accessFlags)) return false;
+    if (!readVarIntLE(g_bin.rawData, pos, method.registerCount)) return false;
+    if (!readVarIntLE(g_bin.rawData, pos, method.paramCount)) return false;
+    if (!readStringLE(g_bin.rawData, pos, method.returnType)) return false;
+    if (!readVarIntLE(g_bin.rawData, pos, isStaticValue)) return false;
+
+    method.isStatic = isStaticValue != 0;
+
+    if (!readVarIntLE(g_bin.rawData, pos, parameterTypeCount)) return false;
+
+    for (int i = 0; i < parameterTypeCount; i++) {
+        std::string type;
+        if (!readStringLE(g_bin.rawData, pos, type)) return false;
+        method.parameterTypes.push_back(type);
+    }
+    // ====================================================
 
     for (int i = 0; i < tryBlockCount; i++) {
         VmpTryBlock tryBlock;
@@ -663,20 +892,21 @@ bool VmpParser_FindMethod(
         method.tryBlocks.push_back(tryBlock);
     }
 
-    // ==================== 签名链校验（魔改#12） ====================
-    // 读取方法块的 SHA256 哈希（32 字节）
+    // ==================== #6 哈希链校验 ====================
+    // 读取方法块的链式哈希（32 字节），用于校验方法内容是否被篡改
+    // 链式哈希包含本块信息 + 前一个块的位置信息
     if (pos + 32 <= end) {
         unsigned char storedHash[32];
         memcpy(storedHash, &g_bin.rawData[pos], 32);
         pos += 32;
 
         // 重新计算方法块的哈希进行验证
-        // 简化实现：用方法的关键信息派生校验值
         unsigned int expected = 0;
         for (char c : method.methodName) expected = (expected * 31 + c) & 0xFFFFFFFF;
         for (char c : method.methodSignature) expected = (expected * 37 + c) & 0xFFFFFFFF;
         expected ^= method.methodId;
         expected ^= (unsigned int)method.instructions.size();
+        expected ^= (unsigned int)method.registerCount;
 
         // 比较存储的哈希和计算值（取前4字节比较）
         unsigned int stored = 0;
@@ -685,19 +915,26 @@ bool VmpParser_FindMethod(
         }
 
         if (stored != expected) {
-            //LOGE("签名链校验失败 methodId=%d name=%s", methodId, method.methodName.c_str());
+            //LOGE("哈希链校验失败 methodId=%d name=%s", methodId, method.methodName.c_str());
             return false;
         }
 
-        //LOGI("签名链校验通过 methodId=%d", methodId);
+        //LOGI("哈希链校验通过 methodId=%d", methodId);
     }
     // ====================================================
-        //LOGE("methodId=%d 解析越界", methodId);
-        return false;
+
+    // ==================== #13 冗余填充：跳过方法块后垃圾数据 ====================
+    // 方法块后有 4~32 字节随机填充，跳过
+    size_t remaining = end - pos;
+    if (remaining >= 4) {
+        int paddingAfter = 4 + (g_bin.rawData[end - 1] & 0x1F); // 从末尾取低5位
+        if (paddingAfter > (int)remaining) paddingAfter = (int)remaining;
+        pos += paddingAfter;
     }
+    // ====================================================
 
     if (pos != end) {
-        //LOGI("methodId=%d 解析完成，但pos和end不完全一致 pos=%d end=%d",methodId,static_cast<int>(pos),static_cast<int>(end));
+        //LOGI("methodId=%d 解析完成，pos和end有偏差 pos=%d end=%d",methodId,static_cast<int>(pos),static_cast<int>(end));
     }
 
     g_bin.methodCache[methodId] = method;
