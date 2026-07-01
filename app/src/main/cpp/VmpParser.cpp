@@ -201,6 +201,30 @@ static bool decryptVmpBinIfNeeded(const std::vector<unsigned char> &input,
 }
 // ====================================================
 
+// ==================== #16 加密跳转表辅助：旋转混淆逆变换 ====================
+// 还原 Java 端的 rotateLong/rotateInt 混淆
+static long rotateLongDecrypt(long value, int seed) {
+    int shift = (seed & 0x1F) + 1;
+    if (shift == 32) shift = 0;
+    // 逆变换：先 XOR mask
+    value ^= ((long)seed << 16) | (seed & 0xFFFFL);
+    value &= 0xFFFFFFFFL;
+    // 逆旋转
+    long rotated = (value >>> shift) | (value << (32 - shift));
+    return rotated & 0xFFFFFFFFL;
+}
+
+static int rotateIntDecrypt(int value, int seed) {
+    int shift = ((seed >> 2) & 0x1F) + 1;
+    if (shift == 32) shift = 0;
+    // 逆变换：先 XOR mask
+    value ^= (seed & 0xFFFF);
+    // 逆旋转
+    int rotated = (value >>> shift) | (value << (32 - shift));
+    return rotated;
+}
+// ====================================================
+
 
 static bool readLongLE(const std::vector<unsigned char> &data, size_t &pos, int64_t &out) {
     if (pos + 8 > data.size()) {
@@ -612,13 +636,21 @@ static bool parseVmpHeaderAndIndex() {
             //LOGE("读取offset失败 index=%d", i);
             return false;
         }
-        offset = encryptedOffset ^ (int64_t)(xormask & 0xFFFF);
+
+        // ==================== #16 加密跳转表：旋转逆变换 + XOR 解码 ====================
+        long rotatedOffset = rotateLongDecrypt(encryptedOffset, xormask);
+        offset = rotatedOffset ^ (int64_t)(xormask & 0xFFFF);
+        // ====================================================
 
         if (!readIntLE(data, pos, encryptedSize)) {
             //LOGE("读取size失败 index=%d", i);
             return false;
         }
-        size = encryptedSize ^ (xormask & 0xFF);
+
+        // ==================== #16 加密跳转表：旋转逆变换 + XOR 解码 ====================
+        int rotatedSize = rotateIntDecrypt(encryptedSize, xormask);
+        size = rotatedSize ^ (xormask & 0xFF);
+        // ====================================================
 
         if (!readIntLE(data, pos, encryptedChecksum)) {
             //LOGE("读取checksum失败 index=%d", i);

@@ -901,19 +901,82 @@ public class VmpUtils {
                 writeStringLE(raf, block.dexName);
                 writeStringLE(raf, block.className);
 
+                // ==================== #15 指令分片 ====================
+                // 将指令序列拆分为多个碎片，分散存储在 bin 不同位置
+                // 碎片大小：4~16 条指令，碎片数量：2~4
+                List<ExtractInstruction> firstFragment;
+                List<Long> fragmentOffsets = new ArrayList<>();
+                long firstFragmentOffset = 0;
+
+                if (block.instructions.size() > 16) {
+                    // 需要分片
+                    int fragSize = 4 + (Math.abs(block.methodId * 3571) % 12); // 4~15
+                    int fragCount = (block.instructions.size() + fragSize - 1) / fragSize;
+                    if (fragCount > 4) fragCount = 4;
+                    fragSize = (block.instructions.size() + fragCount - 1) / fragCount;
+
+                    firstFragment = new ArrayList<>();
+                    for (int i = 0; i < Math.min(fragSize, block.instructions.size()); i++) {
+                        firstFragment.add(block.instructions.get(i));
+                    }
+
+                    // 记录第一个碎片偏移（方法块内）
+                    firstFragmentOffset = raf.getFilePointer() + 8; // +8 for instructionCount + blockKeyInt
+                    fragmentOffsets.add(firstFragmentOffset);
+
+                    // 后续碎片写入 bin 文件末尾
+                    for (int f = 1; f < fragCount; f++) {
+                        // 垃圾分隔
+                        int junkLen = 4 + (Math.abs((block.methodId + f) * 7717) % 20);
+                        byte[] junk = new byte[junkLen];
+                        new java.security.SecureRandom().nextBytes(junk);
+                        raf.write(junk);
+
+                        long fragOffset = raf.getFilePointer();
+                        fragmentOffsets.add(fragOffset);
+
+                        // 写入碎片头
+                        writeIntLE(raf, f); // 碎片编号
+                        writeIntLE(raf, fragSize); // 碎片大小
+
+                        // 写入碎片指令
+                        int start = f * fragSize;
+                        int end = Math.min(start + fragSize, block.instructions.size());
+                        for (int i = start; i < end; i++) {
+                            writeSingleInstructionEncrypted(raf, block.instructions.get(i),
+                                    opcodeKey, block.methodId);
+                        }
+                    }
+                } else {
+                    // 不分片
+                    firstFragment = block.instructions;
+                    fragmentOffsets.add(0L); // 0 表示不分片
+                }
+                // ====================================================
+
                 // 指令数据段（提前写入，与元数据交错）
                 long instructionsOffset = raf.getFilePointer();
-                writeIntLE(raf, 0); // 占位：instructionCount
-                writeIntLE(raf, 0); // 占位：blockKeyInt
+                writeIntLE(raf, block.instructions.size()); // 总指令数
+                writeIntLE(raf, block.instructions.size()); // 第一个碎片指令数（分片时可能不同）
+                writeIntLE(raf, generateBlockKey(block.methodId)); // 块密钥
+                writeVarInt(raf, firstFragment.size()); // 第一个碎片指令数
+                writeVarInt(raf, fragmentOffsets.size()); // 碎片数量
+
+                // 写入碎片偏移表（占位）
+                long fragmentTableOffset = raf.getFilePointer();
+                for (int i = 0; i < fragmentOffsets.size(); i++) {
+                    writeLongLE(raf, 0); // 占位
+                }
 
                 long insnDataStart = raf.getFilePointer();
-                writeInstructionsEncrypted(raf, block.instructions, opcodeKey, block.methodId);
+                writeInstructionsEncrypted(raf, firstFragment, opcodeKey, block.methodId);
                 long insnDataEnd = raf.getFilePointer();
 
-                // 回头填写 instructionCount
-                raf.seek(instructionsOffset);
-                writeIntLE(raf, block.instructions.size());
-                writeIntLE(raf, generateBlockKey(block.methodId)); // 块密钥
+                // 回头填写碎片偏移表
+                raf.seek(fragmentTableOffset);
+                for (int i = 0; i < fragmentOffsets.size(); i++) {
+                    writeLongLE(raf, fragmentOffsets.get(i));
+                }
                 raf.seek(insnDataEnd);
 
                 // 第二段元数据（尾部）
@@ -976,12 +1039,19 @@ public class VmpUtils {
 
             raf.seek(indexTableOffset);
             for (ClassIndexEntry index : indexEntries) {
-                // ==================== #7 索引表自校验 ====================
-                // offset/size 用 opcodeMap 大小派生密钥 XOR 混淆
+                // ==================== #7 索引表自校验 + #16 加密跳转表 ====================
+                // offset/size 用 opcodeMap 大小派生密钥 XOR + 旋转混淆
                 int xormask = (opcodeMap.size() * 31 + 17) & 0xFFFFFFFF;
+
+                // ==================== #16 加密跳转表：旋转混淆 ====================
+                // 将 offset 和 size 的字节顺序旋转，使静态分析无法直接读取
+                long rotatedOffset = rotateLong(index.offset, xormask);
+                int rotatedSize = rotateInt(index.size, xormask);
+                // ====================================================
+
                 writeIntLE(raf, index.methodId);
-                writeLongLE(raf, index.offset ^ (long)(xormask & 0xFFFF));
-                writeIntLE(raf, index.size ^ (xormask & 0xFF));
+                writeLongLE(raf, rotatedOffset ^ (long)(xormask & 0xFFFF));
+                writeIntLE(raf, rotatedSize ^ (xormask & 0xFF));
                 // 写入校验和（methodId XOR offset XOR size 的低16位）
                 int checksum = (index.methodId
                         ^ (int)(index.offset & 0xFFFF)
@@ -1403,6 +1473,38 @@ public class VmpUtils {
         }
     }
 
+    // 写入单条指令（用于碎片）
+    static void writeSingleInstructionEncrypted(RandomAccessFile raf,
+                                                 ExtractInstruction insn,
+                                                 byte[] opcodeKey,
+                                                 int methodId) throws IOException {
+        int blockKeyInt = generateBlockKey(methodId);
+
+        writeVarInt(raf, insn.codeUnitOffset);
+        writeVarInt(raf, insn.vmOpcode ^ xorByte(opcodeKey, 8));
+        writeStringLE(raf, insn.formatName);
+        writeVarInt(raf, insn.codeUnits);
+        writeVarInt(raf, insn.registers.size());
+
+        for (Integer reg : insn.registers) {
+            writeVarInt(raf, reg ^ (blockKeyInt & 0xFF));
+        }
+
+        writeVarInt(raf, insn.literalType);
+
+        long encryptedLiteral = insn.literalValue ^ (blockKeyInt & 0xFFFFFFFFL);
+        writeVarLong(raf, encryptedLiteral);
+
+        writeVarInt(raf, insn.offsetType);
+        writeVarInt(raf, insn.offsetValue ^ (blockKeyInt & 0xFF));
+
+        writeIntLE(raf, insn.referenceType);
+        writeStringLE(raf, insn.referenceData);
+
+        writeIntLE(raf, insn.extraReferenceType);
+        writeStringLE(raf, insn.extraReferenceData);
+    }
+
     static int generateBlockKey(int methodId) {
         int key = methodId;
         key = (key * 0x9E3779B9) ^ 0x517CC1B7;
@@ -1464,6 +1566,29 @@ public class VmpUtils {
 
         return result;
     }
+
+    // ==================== #16 加密跳转表辅助：旋转混淆 ====================
+    // 将 long/int 的字节顺序进行旋转混淆
+    // 使静态分析无法直接读取 offset/size 的真实值
+    static long rotateLong(long value, int seed) {
+        int shift = (seed & 0x1F) + 1; // 1~32 位旋转
+        if (shift == 32) shift = 0;
+        long rotated = (value << shift) | (value >>> (32 - shift));
+        // 与 mask 混合
+        rotated ^= ((long)seed << 16) | (seed & 0xFFFFL);
+        return rotated & 0xFFFFFFFFL;
+    }
+
+    static int rotateInt(int value, int seed) {
+        int shift = ((seed >> 2) & 0x1F) + 1; // 不同的旋转量
+        if (shift == 32) shift = 0;
+        int rotated = (value << shift) | (value >>> (32 - shift));
+        // 与 mask 混合
+        rotated ^= (seed & 0xFFFF);
+        return rotated;
+    }
+    // ====================================================
+
     // ====================================================
 
     static int readIntLE(RandomAccessFile in) throws IOException {
@@ -2519,9 +2644,10 @@ public class VmpUtils {
 
     static class ClassIndexEntry {
         int methodId;
-        long offset;
-        int size;
-        int writeOrder; // 写入顺序（乱序存储用）
+        long offset;        // 主方法块偏移（元数据 + 首片指令）
+        int size;           // 主方法块大小
+        int writeOrder;     // 写入顺序（乱序存储用）
+        List<Long> fragmentOffsets; // 后续碎片偏移列表（指令分片）
     }
 
     static class ExtractTryBlock {
