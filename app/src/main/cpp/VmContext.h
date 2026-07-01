@@ -40,6 +40,14 @@ struct VmContext {
 
 
 
+    // ==================== 控制流扁平化（魔改#13） ====================
+    // dispatch state 代替直接 pc++，将线性控制流"压平"为大 switch
+    // 每个指令对应唯一 state ID，handler 执行后设置下一个 state
+    // 使静态分析无法从代码结构推断真实执行顺序
+    int dispatchState = 0;
+    bool useDispatch = false;
+    // ====================================================
+
     int pc = 0;
     bool running = true;
 

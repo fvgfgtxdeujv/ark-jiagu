@@ -35,6 +35,14 @@ bool VmContext_Init(
     ctx.regs.clear();
     ctx.regs.resize(method.registerCount);
 
+    // ==================== 控制流扁平化初始化（魔改#13） ====================
+    // 当方法包含足够的指令时启用 dispatch 模式
+    ctx.useDispatch = method.instructions.size() >= 8;
+    if (ctx.useDispatch) {
+        ctx.dispatchState = 0; // state 0 对应 instructions[0]
+    }
+    // ====================================================
+
     ctx.offsetToIndex.clear();
     for (int i = 0; i < static_cast<int>(method.instructions.size()); i++) {
         ctx.offsetToIndex[method.instructions[i].codeUnitOffset] = i;
@@ -53,7 +61,7 @@ bool VmContext_Init(
 
     int paramBase = method.registerCount - paramRegisterCount;
     if (paramBase < 0) {
-        //LOGE("参数寄存器计算错误 registerCount=%d paramRegisterCount=%d",method.registerCount,paramRegisterCount);
+        //LOGE("参数寄存器计算错�?registerCount=%d paramRegisterCount=%d",method.registerCount,paramRegisterCount);
         return false;
     }
 
