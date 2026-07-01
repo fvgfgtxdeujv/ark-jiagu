@@ -47,11 +47,13 @@ target_link_options(
 
 find_library(log-lib log)
 find_library(android-lib android)
+find_library(z-lib z)
 
 target_link_libraries(
         ArkStub
         ${log-lib}
         ${android-lib}
+        ${z-lib}
 )
 
 # 加固器工具 so：libArkTool.so

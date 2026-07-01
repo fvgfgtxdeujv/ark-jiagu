@@ -1,6 +1,7 @@
 #include "VmpRuntime.h"
 #include "VmpParser.h"
 #include "VmpInterpreter.h"
+#include "ArkAntiDebug.h"
 #include <android/log.h>
 
 #define LOG_TAG "ArkVMP_VmpRuntime"
@@ -80,6 +81,19 @@ VmResult VmpRuntime_Execute(
         //LOGE("未找到 methodId=%d", methodId);
         return result;
     }
+
+    // ==================== SO 自校验（魔改#9） ====================
+    // 每执行 100 次方法调用校验一次 SO 完整性
+    // 避免每次调用都校验影响性能
+    static int execCounter = 0;
+    if (++execCounter >= 100) {
+        execCounter = 0;
+        if (!checkSelfIntegrity()) {
+            LOGE("SO完整性校验失败，终止VMP执行");
+            return result;
+        }
+    }
+    // ====================================================
 
     jsize argCount = 0;
     if (args != nullptr) {

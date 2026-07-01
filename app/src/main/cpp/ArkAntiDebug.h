@@ -13,6 +13,12 @@ extern "C" {
  */
 bool ArkAntiDebug_CheckAll(JNIEnv *env);
 
+/**
+ * SO 自校验：检查 SO 文件是否被 patch/篡改
+ * 返回 true 表示完整性校验通过
+ */
+bool checkSelfIntegrity();
+
 #ifdef __cplusplus
 }
 #endif

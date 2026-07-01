@@ -4,10 +4,121 @@
 
 #include <string>
 #include <android/log.h>
+#include <dlfcn.h>
+#include <zlib.h>
 
 #define LOG_TAG "ArkVMP_ArkVMP"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+// ==================== SO 自校验（魔改#9） ====================
+// 在 JNI_OnLoad 时计算 SO 的 CRC32，后续定期校验是否被 patch
+static uLong g_selfCrc32 = 0;
+static bool g_selfCrcValid = false;
+
+// 从 /proc/self/maps 读取 SO 文件路径
+static std::string getSelfSoPath() {
+    int fd = open("/proc/self/maps", O_RDONLY);
+    if (fd < 0) return "";
+
+    char buf[4096];
+    ssize_t len = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (len <= 0) return "";
+
+    buf[len] = '\0';
+
+    // 查找包含 "r-xp" 且以 ".so" 结尾的行
+    char *line = buf;
+    while (line) {
+        char *next = strstr(line, "\n");
+        if (next) *next = '\0';
+
+        // 查找 r-xp 权限段
+        if (strstr(line, "r-xp")) {
+            // 查找路径（最后一个空格之后）
+            char *path = strrchr(line, ' ');
+            if (path && *(path + 1) != '\0') {
+                path++;
+                if (strstr(path, ".so") || strstr(path, ".so")) {
+                    std::string result(path);
+                    // 去掉可能的注释部分
+                    size_t space = result.find(' ');
+                    if (space != std::string::npos) {
+                        result = result.substr(0, space);
+                    }
+                    return result;
+                }
+            }
+        }
+
+        line = next ? next + 1 : nullptr;
+    }
+
+    return "";
+}
+
+// 计算文件的 CRC32
+static uLong computeFileCrc32(const std::string &filePath) {
+    int fd = open(filePath.c_str(), O_RDONLY);
+    if (fd < 0) return 0;
+
+    uLong crc = crc32(0L, Z_NULL, 0);
+    char buf[4096];
+    ssize_t len;
+
+    while ((len = read(fd, buf, sizeof(buf))) > 0) {
+        crc = crc32(crc, (const Bytef *)buf, len);
+    }
+
+    close(fd);
+    return crc;
+}
+
+// 初始化 SO 自校验基线
+static bool initSelfCrc32() {
+    if (g_selfCrcValid) return true;
+
+    std::string soPath = getSelfSoPath();
+    if (soPath.empty()) {
+        LOGE("SO自校验：找不到SO路径");
+        return false;
+    }
+
+    g_selfCrc32 = computeFileCrc32(soPath);
+    if (g_selfCrc32 == 0) {
+        LOGE("SO自校验：CRC计算失败 path=%s", soPath.c_str());
+        return false;
+    }
+
+    g_selfCrcValid = true;
+    LOGI("SO自校验基线已建立 path=%s crc=0x%lx", soPath.c_str(), g_selfCrc32);
+    return true;
+}
+
+// 校验 SO 是否被修改
+static bool checkSelfIntegrity() {
+    if (!g_selfCrcValid) {
+        // 还没建立基线，先建立
+        return initSelfCrc32();
+    }
+
+    std::string soPath = getSelfSoPath();
+    if (soPath.empty()) {
+        LOGE("SO自校验：找不到SO路径");
+        return false;
+    }
+
+    uLong currentCrc = computeFileCrc32(soPath);
+    if (currentCrc != g_selfCrc32) {
+        LOGE("SO自校验失败：CRC不匹配 baseline=0x%lx current=0x%lx path=%s",
+             g_selfCrc32, currentCrc, soPath.c_str());
+        return false;
+    }
+
+    return true;
+}
+// ====================================================
 
 extern "C"
 __attribute__((used))
