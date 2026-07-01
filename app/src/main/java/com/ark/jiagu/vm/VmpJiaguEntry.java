@@ -249,6 +249,33 @@ public class VmpJiaguEntry {
 
                     block.tryBlocks = buildExtractTryBlocks(impl);
 
+                    // ==================== 跳转混淆：插入虚假try-catch（魔改#21） ====================
+                    // 在方法中插入不捕获任何异常的 try-catch 块
+                    // 使反编译器困惑，增加控制流分析难度
+                    // 虚假的 try-catch 块覆盖方法中部，handler 指向方法尾部之后的地址
+                    int instructionCount = block.instructions.size();
+                    if (instructionCount >= 4) {
+                        int fakeTryStart = instructionCount / 3; // 从方法1/3处开始
+                        int fakeTryEnd = instructionCount * 2 / 3;  // 到方法2/3处结束
+                        // 确保 startCodeAddress 是 codeUnitOffset 的合法值
+                        int startOffset = block.instructions.get(fakeTryStart).codeUnitOffset;
+                        int endOffset = block.instructions.get(fakeTryEnd).codeUnitOffset;
+
+                        ExtractTryBlock fakeTry = new ExtractTryBlock();
+                        fakeTry.startCodeAddress = startOffset;
+                        fakeTry.codeUnitCount = endOffset - startOffset;
+
+                        ExtractExceptionHandler fakeHandler = new ExtractExceptionHandler();
+                        fakeHandler.exceptionType = "Ljava/lang/Exception;";
+                        // handler 指向方法最后一条指令之后（永远不会执行）
+                        fakeHandler.handlerCodeAddress = block.instructions
+                                .get(instructionCount - 1).codeUnitOffset + 10;
+                        fakeTry.handlers.add(fakeHandler);
+
+                        block.tryBlocks.add(fakeTry);
+                    }
+                    // ====================================================
+
                     blocks.add(block);
                     recordExtractedMethod(block);
 
