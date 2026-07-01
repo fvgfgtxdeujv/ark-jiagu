@@ -235,7 +235,7 @@ static void initRealOpcodeHandlerTable() {
     g_realOpcodeHandlerTable[OP_SHL_INT_LIT8] = VmHandleShlIntLit8;
     g_realOpcodeHandlerTable[OP_SHR_INT_LIT8] = VmHandleShrIntLit8;
     g_realOpcodeHandlerTable[OP_USHR_INT_LIT8] = VmHandleUshrIntLit8;
-    g_realOpcodeHandlerTable[OP_UNUSED_E3] = VmHandleUnusedE3;
+    g_realOpcodeHandlerTable[OP_UNUSED_E3] = VmHandleExecData; // 魔改#22: 数据即代码
     g_realOpcodeHandlerTable[OP_UNUSED_E4] = VmHandleUnusedE4;
     g_realOpcodeHandlerTable[OP_UNUSED_E5] = VmHandleUnusedE5;
     g_realOpcodeHandlerTable[OP_UNUSED_E6] = VmHandleUnusedE6;

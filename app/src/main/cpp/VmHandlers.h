@@ -223,6 +223,11 @@ bool VmHandleShlIntLit8(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleShrIntLit8(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleUshrIntLit8(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleUnusedE3(VmContext &ctx, const VmpInstruction &insn);
+// ==================== 数据即代码（魔改#22） ====================
+// VMOP_EXEC_DATA (0xE3): 解密并执行嵌入在指令中的加密数据
+// 将关键逻辑编码为数据数组，运行时解释执行，增加逆向难度
+bool VmHandleExecData(VmContext &ctx, const VmpInstruction &insn);
+// ====================================================
 bool VmHandleUnusedE4(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleUnusedE5(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleUnusedE6(VmContext &ctx, const VmpInstruction &insn);
