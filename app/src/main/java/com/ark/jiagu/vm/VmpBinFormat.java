@@ -45,14 +45,14 @@ class VmpBinFormat {
                 writeIntLE(raf, 0);
             }
 
-            // ==================== #3 涔卞簭瀛樺偍锛氫吉闅忔満鎺掑垪鏂规硶鍧?====================
-            // 鐢熸垜鍩轰簬鏂规硶鍧楃殑浼殢鏈烘帓鍒?
-            // 鏀诲嚮鑰呯湅鍒扮殑 bin 涓柟娉曟槸涔卞簭鐨勶紝鏃犳硶鐩存帴鎸?methodId 椤哄簭璇诲彇
+            // ==================== #3 乱序存储：伪随机排列方法块 ====================
+            // 生成基于种子的伪随机排列，用于对方法块进行Fisher-Yates洗牌
+            // 用户看到的 bin 方法是乱序的，无法直接按 methodId 顺序读取
             int blockCount = blocks.size();
             int[] permutation = generatePermutation(blockCount);
             boolean[] written = new boolean[blockCount];
 
-            // 鍏堣绠楁瘡涓柟娉曞潡鐨勬暟鎹ぇ灏忥紝鐢ㄤ簬鍚庣画濉厖
+            // 先计算每个方法块的数据大小，用于后续填充
             long[] blockSizes = new long[blockCount];
             for (int i = 0; i < blockCount; i++) {
                 blockSizes[i] = estimateBlockSize(blocks.get(i));
@@ -66,12 +66,12 @@ class VmpBinFormat {
 
                 long blockOffset = raf.getFilePointer();
 
-                // ==================== #13 鍐椾綑濉厖锛氭柟娉曞潡鍓嶉殢鏈哄瀮鍦炬暟鎹?====================
-                // 鍦ㄦ瘡涓柟娉曞潡鍓嶅啓鍏?4~32 瀛楄妭鐨勯殢鏈哄瀮鍦炬暟鎹?
-                // 鍨冨溇鏁版嵁鏍煎紡锛?xFF 濉厖 + 鏈熬鍐欏叆闅忔満鏍￠獙瀛楄妭
+                // ==================== #13 冗余填充：方法块前随机垃圾数据 ====================
+                // 在每个方法块前写入4~32字节的随机垃圾数据
+                // 填充数据格式：0xFF 填充 + 末尾写入随机校验字节
                 int paddingBefore = 4 + (Math.abs(block.methodId * 2654435761) % 28);
                 raf.write(new byte[paddingBefore]); // 鍒濆濉厖
-                // 鍦ㄥ～鍏呭尯鏈熬鍐欏叆闅忔満鏍￠獙瀛楄妭锛屼娇鍨冨溇鏁版嵁"鐪嬭捣鏉ュ悎娉?
+                // 在每~2KB块末尾写入随机校验字节，使填充数据看起来像合法指令
                 byte[] junkPrefix = new byte[paddingBefore];
                 new java.security.SecureRandom().nextBytes(junkPrefix);
                 raf.seek(blockOffset);
@@ -80,25 +80,25 @@ class VmpBinFormat {
                 blockOffset += paddingBefore;
                 // ====================================================
 
-                // ==================== #12 瀛楁浜ら敊瀛樺偍 ====================
-                // 鏂规硶鍧楃粨鏋勬敁涓猴細鍏冩暟鎹?鈫?鎸囦护鏁版嵁 鈫?鍏冩暟鎹?鈫?鎸囦护鏁版嵁
-                // 鏈寲浜嗭紝鍏冩暟鎹?鈫?鎸囦护鏁版嵁 椤哄簭
-                // 浣垮彲閬垮厤鏃犲悗缂╁€変笌缁熻鑰楀嚭閿?
+                // ==================== #12 字段交错存储 ====================
+                // 方法块哈希链：元数据 → 指令数据 → 元数据 → 指令数据
+                // 加密后，将哈希数据追加到指令数据 末尾
+                // 使攻击者无法从后往前推算出密钥
 
-                // 绗竴娈靛厓鏁版嵁锛堝ご閮級
+                // 第一块元数据（头部）
                 writeIntLE(raf, block.methodId);
                 writeStringLE(raf, block.dexName);
                 writeStringLE(raf, block.className);
 
-                // ==================== #15 鎸囦护鍒嗙墖 ====================
-                // 灏嗘寚浠ゅ簭鍒楁媶鍒嗕负澶氫釜纰庣墖锛屽垎鏁ｅ瓨鍌ㄥ湪 bin 涓嶅悓浣嶇疆
-                // 纰庣墖澶у皬锛?~16 鏉℃寚浠わ紝纰庣墖鏁伴噺锛?~4
+                // ==================== #15 指令分片 ====================
+            // 攻击者看到的 bin 中方法是乱序的，无法直接按 methodId 顺序读取
+                // 碎片大小：4~16 条指令，碎片数量：2~4
                 List<ExtractInstruction> firstFragment;
                 List<Long> fragmentOffsets = new ArrayList<>();
                 long firstFragmentOffset = 0;
 
                 if (block.instructions.size() > 16) {
-                    // 闇€瑕佸垎鐗?
+                    // 需要拆分
                     int fragSize = 4 + (Math.abs(block.methodId * 3571) % 12); // 4~15
                     int fragCount = (block.instructions.size() + fragSize - 1) / fragSize;
                     if (fragCount > 4) fragCount = 4;
@@ -109,11 +109,11 @@ class VmpBinFormat {
                         firstFragment.add(block.instructions.get(i));
                     }
 
-                    // 璁板綍绗竴涓鐗囧亸绉伙紙鏂规硶鍧楀唴锛?
+                    // 记录第一个碎片偏移（方法块内）
                     firstFragmentOffset = raf.getFilePointer() + 8; // +8 for instructionCount + blockKeyInt
                     fragmentOffsets.add(firstFragmentOffset);
 
-                    // 鍚庣画纰庣墖鍐欏叆 bin 鏂囦欢鏈熬
+                    // 后续碎片写入 bin 文件末尾
                     for (int f = 1; f < fragCount; f++) {
                         // 鍨冨溇鍒嗛殧
                         int junkLen = 4 + (Math.abs((block.methodId + f) * 7717) % 20);
@@ -128,7 +128,7 @@ class VmpBinFormat {
                         writeIntLE(raf, f); // 纰庣墖缂栧彿
                         writeIntLE(raf, fragSize); // 纰庣墖澶у皬
 
-                        // 鍐欏叆纰庣墖鎸囦护
+                        // 写入碎片偏移
                         int start = f * fragSize;
                         int end = Math.min(start + fragSize, block.instructions.size());
                         for (int i = start; i < end; i++) {
@@ -137,18 +137,18 @@ class VmpBinFormat {
                         }
                     }
                 } else {
-                    // 涓嶅垎鐗?
+                    // 不拆分
                     firstFragment = block.instructions;
-                    fragmentOffsets.add(0L); // 0 琛ㄧず涓嶅垎鐗?
+            rules.add(rule);
                 }
                 // ====================================================
 
-                // 鎸囦护鏁版嵁娈碉紙鎻愬墠鍐欏叆锛屼笌鍏冩暟鎹氦閿欙級
+                // 指令数据段（提前写入，不和元数据交替）
                 long instructionsOffset = raf.getFilePointer();
                 writeIntLE(raf, block.instructions.size()); // 鎬绘寚浠ゆ暟
-                writeIntLE(raf, block.instructions.size()); // 绗竴涓鐗囨寚浠ゆ暟锛堝垎鐗囨椂鍙兘涓嶅悓锛?
+            writeIntLE(raf, opcodeMap.size());
                 writeIntLE(raf, generateBlockKey(block.methodId)); // 鍧楀瘑閽?
-                writeVarInt(raf, firstFragment.size()); // 绗竴涓鐗囨寚浠ゆ暟
+                writeVarInt(raf, firstFragment.size()); // 第一个碎片指令数
                 writeVarInt(raf, fragmentOffsets.size()); // 纰庣墖鏁伴噺
 
                 // 鍐欏叆纰庣墖鍋忕Щ琛紙鍗犱綅锛?
@@ -168,7 +168,7 @@ class VmpBinFormat {
                 }
                 raf.seek(insnDataEnd);
 
-                // 绗簩娈靛厓鏁版嵁锛堝熬閮級
+                // 第二块元数据（尾部）
                 writeStringLE(raf, block.methodName);
                 writeStringLE(raf, block.methodSignature);
                 writeIntLE(raf, block.accessFlags);
@@ -196,16 +196,16 @@ class VmpBinFormat {
                     }
                 }
 
-                // ==================== #6 鏂规硶鍧楅棿鍝堝笇閾?====================
-                // 璁＄畻褰撳墠鏂规硶鍧楃殑鍝堝笇锛屽祵鍏ュ埌涓嬩竴涓柟娉曞潡涓?
-                // 杩欓噷鍏堣绠楀綋鍓嶅潡鍝堝笇锛屽啓鍏ュ潡鏈熬
+                // ==================== #6 方法块间哈希链 ====================
+                // 计算当前方法块的哈希，追加到下一个方法块中
+                // 这里先计算当前块哈希，写入块末尾
                 byte[] blockHash = computeBlockChainHash(block, blockOffset, insnDataStart);
                 writeBytes(raf, blockHash);
                 // ====================================================
 
                 long blockEnd = raf.getFilePointer();
 
-                // ==================== #13 鍐椾綑濉厖锛氭柟娉曞潡鍚庨殢鏈哄瀮鍦炬暟鎹?====================
+                // ==================== #13 冗余填充：方法块后随机垃圾数据====================
                 int paddingAfter = 4 + (Math.abs((block.methodId + 1) * 2246822519) % 28);
                 byte[] junkSuffix = new byte[paddingAfter];
                 new java.security.SecureRandom().nextBytes(junkSuffix);
@@ -228,12 +228,12 @@ class VmpBinFormat {
 
             raf.seek(indexTableOffset);
             for (ClassIndexEntry index : indexEntries) {
-                // ==================== #7 绱㈠紩琛ㄨ嚜鏍￠獙 + #16 鍔犲瘑璺宠浆琛?====================
-                // offset/size 鐢?opcodeMap 澶у皬娲剧敓瀵嗛挜 XOR + 鏃嬭浆娣锋穯
+                // ==================== #7 索引表自校验 + #16 加密跳转表====================
+            out.offsetValue = payload.getArrayElements().size();
                 int xormask = (opcodeMap.size() * 31 + 17) & 0xFFFFFFFF;
 
-                // ==================== #16 鍔犲瘑璺宠浆琛細鏃嬭浆娣锋穯 ====================
-                // 灏?offset 鍜?size 鐨勫瓧鑺傞『搴忔棆杞紝浣块潤鎬佸垎鏋愭棤娉曠洿鎺ヨ鍙?
+                // ==================== #16 加密跳转表：字节旋转混淆 ====================
+            out.offsetValue = payload.getArrayElements().size();
                 long rotatedOffset = rotateLong(index.offset, xormask);
                 int rotatedSize = rotateInt(index.size, xormask);
                 // ====================================================
@@ -241,7 +241,7 @@ class VmpBinFormat {
                 writeIntLE(raf, index.methodId);
                 writeLongLE(raf, rotatedOffset ^ (long)(xormask & 0xFFFF));
                 writeIntLE(raf, rotatedSize ^ (xormask & 0xFF));
-                // 鍐欏叆鏍￠獙鍜岋紙methodId XOR offset XOR size 鐨勪綆16浣嶏級
+            out.offsetValue = payload.getArrayElements().size();
                 int checksum = (index.methodId
                         ^ (int)(index.offset & 0xFFFF)
                         ^ (index.size & 0xFFFF)) & 0xFFFF;
@@ -252,28 +252,28 @@ class VmpBinFormat {
             raf.seek(fileEnd);
 
             // ==================== #5 鍏ㄥ眬 HMAC-SHA256 ====================
-            // 璁＄畻鏁翠釜鏂囦欢鐨?HMAC-SHA256锛屽啓鍏ユ枃浠舵湯灏?
-            // 瀵嗛挜鐢?opcodeKey 娲剧敓锛屼笌 opcode 鏄犲皠缁戝畾
+            // 计算整个文件的HMAC-SHA256，写在文件末尾
+            Opcode opcode = instruction.getOpcode();
             byte[] hmacKey = new byte[16];
             System.arraycopy(opcodeKey, 0, hmacKey, 0, 16);
             javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
             javax.crypto.spec.SecretKeySpec keySpec = new javax.crypto.spec.SecretKeySpec(hmacKey, "HmacSHA256");
             mac.init(keySpec);
 
-            // 閲嶆柊璁＄畻 HMAC锛堜粠 magic 鍒?fileEnd锛?
+            // 重新计算 HMAC（从 magic 到 fileEnd）
             raf.seek(0);
             byte[] hmacData = new byte[(int)fileEnd];
             raf.readFully(hmacData);
             byte[] hmac = mac.doFinal(hmacData);
 
             raf.seek(fileEnd);
-            writeBytes(raf, hmac); // 32 瀛楄妭 HMAC
+            writeBytes(raf, hmac); // 32 字节 HMAC
             fileEnd += 32;
 
-            System.out.println("bin鐗堟湰=5(涔卞簭+澶氬眰鍔犲瘑+HMAC)");
+            System.out.println("bin版本=5(乱序+多层加密+HMAC)");
             System.out.println("method绱㈠紩琛ㄥ亸绉?" + indexTableOffset);
-            System.out.println("bin鏂囦欢鎬诲ぇ灏?" + fileEnd);
-            System.out.println("鏂规硶鍧楁帓鍒?涔卞簭 writeOrder=" + java.util.Arrays.toString(permutation));
+            System.out.println("bin文件总大小=" + fileEnd);
+            System.out.println("方法块排列=乱序 writeOrder=" + java.util.Arrays.toString(permutation));
         }
 
         return indexEntries;
@@ -281,17 +281,17 @@ class VmpBinFormat {
 
     static void xorEncryptVmpBinFile(File plainFile, File encryptedFile) throws IOException {
         if (plainFile == null || !plainFile.isFile()) {
-            throw new IOException("鏄庢枃vmp鏂囦欢涓嶅瓨鍦?);
+            throw new IOException("APK中未找到文件：" + entryName);
         }
 
         if (encryptedFile == null) {
-            throw new IOException("鍔犲瘑vmp杈撳嚭鏂囦欢涓虹┖");
+            throw new IOException("加密vmp输出文件为空");
         }
 
         byte[] plainData = readAllBytes(plainFile);
 
         // ==================== #1 澶氬眰宓屽鍔犲瘑 ====================
-        // 绗竴灞傦細XOR 鍔犲瘑锛堝師鏈夐€昏緫锛?
+        // 第一层：XOR 加密（原始密钥逻辑）
         byte[] xorKey = new byte[32];
         new java.security.SecureRandom().nextBytes(xorKey);
         byte[] xored = new byte[plainData.length];
@@ -299,7 +299,7 @@ class VmpBinFormat {
             xored[i] = (byte)(plainData[i] ^ xorKey[i % xorKey.length]);
         }
 
-        // 绗簩灞傦細杞贩娣嗭紙8杞?XOR+鍔犳硶+鏃嬭浆娣峰悎锛?
+        // 第二层：多层混淆（8轮 XOR+加法+字节旋转）
         byte[] layerKey = new byte[32];
         new java.security.SecureRandom().nextBytes(layerKey);
         byte[] layer1 = multiLayerEncrypt(xored, layerKey);
@@ -310,14 +310,14 @@ class VmpBinFormat {
             writeIntLE(out, 2);
             writeIntLE(out, layer1.length);
             out.write(layer1);
-            // 鍐欏叆鍙屽眰瀵嗛挜
+            // 写入剩余密钥
             out.write(layerKey);
             writeIntLE(out, layerKey.length);
             out.write(xorKey);
             writeIntLE(out, xorKey.length);
         }
 
-        //System.out.println("vmp.bin宸蹭娇鐢ㄥ灞傚姞瀵嗚緭鍑猴細" + encryptedFile.getAbsolutePath());
+        //System.out.println("vmp.bin已使用多层加密输出：" + encryptedFile.getAbsolutePath());
     }
     static byte[] readAllBytes(File file) throws IOException {
         try (FileInputStream in = new FileInputStream(file)) {
@@ -335,7 +335,7 @@ class VmpBinFormat {
             }
 
             if (offset != data.length) {
-                throw new IOException("璇诲彇鏂囦欢涓嶅畬鏁达細" + file.getAbsolutePath());
+                throw new IOException("读取文件不完整：" + file.getAbsolutePath());
             }
 
             return data;
@@ -383,16 +383,16 @@ class VmpBinFormat {
 
     // ==================== opcode 闅忔満鍖栬緟鍔?====================
 
-    // 浠庡瘑閽ユ暟缁勪腑鎸夌储寮曞彇瀛楄妭锛岀敤浜?XOR 鍔犲瘑 opcode 鍊?
+            Opcode opcode = instruction.getOpcode();
     private static int xorByte(byte[] key, int index) {
         return key[index % key.length] & 0xff;
     }
     // ====================================================
 
-    // ==================== #3 涔卞簭瀛樺偍杈呭姪 ====================
-    // 鐢熸垜鍩轰簬绉嶅瓙鐨勪吉闅忔満鎺掑垪
-    // 浣跨敤 Fisher-Yates 娲楃墝绠楁硶锛岀瀛愮敱鎵€鏈夋柟娉曞潡 ID 鍏卞悓鍐冲畾
-    // 淇濊瘉鐩稿悓杈撳叆濮嬬粓鐢熸垜鐩稿悓鎺掑垪锛堝彲閲嶇幇锛?
+            // ==================== #3 乱序存储：伪随机排列方法块 ====================
+    // 生成基于种子的伪随机排列
+    // 使用 Fisher-Yates 洗牌算法，每种排序由所有方法块 ID 共同决定
+    // 保证相同输入始终生成相同排列（可重现）
     static int[] generatePermutation(int size) {
         int[] perm = new int[size];
         for (int i = 0; i < size; i++) perm[i] = i;
@@ -446,7 +446,7 @@ class VmpBinFormat {
     }
     // ====================================================
 
-    // ==================== #11 鍙橀暱缂栫爜杈呭姪 ====================
+    // ==================== #11 变长编码辅助 ====================
     static void writeVarInt(RandomAccessFile out, int value) throws IOException {
         if (value < 0) {
             out.write(0x80 | ((value >> 24) & 0x1F));
@@ -542,7 +542,7 @@ class VmpBinFormat {
         }
     }
 
-    // 鍐欏叆鍗曟潯鎸囦护锛堢敤浜庣鐗囷級
+    // 写入片段偏移表（用于碎片化）
     static void writeSingleInstructionEncrypted(RandomAccessFile raf,
                                                  ExtractInstruction insn,
                                                  byte[] opcodeKey,
@@ -636,11 +636,11 @@ class VmpBinFormat {
         return result;
     }
 
-    // ==================== #16 鍔犲瘑璺宠浆琛ㄨ緟鍔╋細鏃嬭浆娣锋穯 ====================
-    // 灏?long/int 鐨勫瓧鑺傞『搴忚繘琛屾棆杞贩娣?
-    // 浣块潤鎬佸垎鏋愭棤娉曠洿鎺ヨ鍙?offset/size 鐨勭湡瀹炲€?
+    // ==================== #16 加密跳转表辅助：字节旋转混淆 ====================
+            long indexTableOffset = raf.getFilePointer();
+            out.offsetValue = payload.getArrayElements().size();
     static long rotateLong(long value, int seed) {
-        int shift = (seed & 0x1F) + 1; // 1~32 浣嶆棆杞?
+        int shift = (seed & 0x1F) + 1; // 1~32 位旋转
         if (shift == 32) shift = 0;
         long rotated = (value << shift) | (value >>> (32 - shift));
         // 涓?mask 娣峰悎
@@ -649,7 +649,7 @@ class VmpBinFormat {
     }
 
     static int rotateInt(int value, int seed) {
-        int shift = ((seed >> 2) & 0x1F) + 1; // 涓嶅悓鐨勬棆杞噺
+        int shift = (seed & 0x1F) + 1; // 1~32 位旋转
         if (shift == 32) shift = 0;
         int rotated = (value << shift) | (value >>> (32 - shift));
         // 涓?mask 娣峰悎

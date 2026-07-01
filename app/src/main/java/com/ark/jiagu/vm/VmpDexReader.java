@@ -15,7 +15,7 @@ class VmpDexReader {
     static void VMPextractEntry(ZipFile zipFile, String entryName, File outFile) throws IOException {
         ZipEntry entry = zipFile.getEntry(entryName);
         if (entry == null) {
-            throw new IOException("APK涓湭鎵惧埌鏂囦欢锛? + entryName);
+            throw new IOException("APK中未找到文件：" + entryName);
         }
 
         File parent = outFile.getParentFile();
@@ -113,7 +113,7 @@ class VmpDexReader {
             }
 
             if (offset != data.length) {
-                throw new IOException("璇诲彇鏂囦欢涓嶅畬鏁达細" + file.getAbsolutePath());
+                throw new IOException("读取文件不完整：" + file.getAbsolutePath());
             }
 
             return data;
@@ -133,7 +133,7 @@ class VmpDexReader {
         int b3 = in.read();
 
         if ((b0 | b1 | b2 | b3) < 0) {
-            throw new IOException("璇诲彇int澶辫触锛屾枃浠堕暱搴︿笉瓒?);
+            throw new IOException("APK中未找到文件：" + entryName);
         }
 
         return (b0 & 0xff)
@@ -153,7 +153,7 @@ class VmpDexReader {
         long b7 = in.read();
 
         if ((b0 | b1 | b2 | b3 | b4 | b5 | b6 | b7) < 0) {
-            throw new IOException("璇诲彇long澶辫触锛屾枃浠堕暱搴︿笉瓒?);
+            throw new IOException("APK中未找到文件：" + entryName);
         }
 
         return (b0 & 0xff)
@@ -174,7 +174,7 @@ class VmpDexReader {
         }
 
         if (len < 0) {
-            throw new IOException("瀛楃涓查暱搴﹂潪娉曪細" + len);
+            throw new IOException("字符串长度非法：" + len);
         }
 
         byte[] data = new byte[len];
@@ -189,7 +189,7 @@ class VmpDexReader {
         while (offset < data.length) {
             int read = in.read(data, offset, data.length - offset);
             if (read == -1) {
-                throw new IOException("璇诲彇鏂囦欢澶辫触锛屾枃浠堕暱搴︿笉瓒?);
+            throw new IOException("APK中未找到文件：" + entryName);
             }
             offset += read;
         }

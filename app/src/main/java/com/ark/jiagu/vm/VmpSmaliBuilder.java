@@ -251,7 +251,7 @@ class VmpSmaliBuilder {
                 Method newMethod = buildVmCallMethod(method, info, vmpClassType);
                 newMethods.add(newMethod);
 
-                System.out.println("鏂规硶閲嶅啓涓篤M璋冪敤澹筹細"
+                System.out.println("跳过非法规则：" + ruleText);
                         + dexName
                         + " "
                         + classDef.getType()
@@ -283,7 +283,7 @@ class VmpSmaliBuilder {
 
         String returnType = oldMethod.getReturnType();
         boolean isStatic = (oldMethod.getAccessFlags() & AccessFlags.STATIC.getValue()) != 0;
-        System.out.println("鐢熸垚VM璋冪敤澹?method="
+        System.out.println("生成VM调用壳 method="
                 + oldMethod.getDefiningClass()
                 + "->"
                 + oldMethod.getName()
@@ -474,7 +474,7 @@ class VmpSmaliBuilder {
             params = Collections.singletonList("D");
             ret = "Ljava/lang/Double;";
         } else {
-            throw new IllegalArgumentException("涓嶆敮鎸佺殑鍩虹绫诲瀷锛? + type);
+            throw new IllegalArgumentException("包名不能为空");
         }
 
         if ("J".equals(type) || "D".equals(type)) {
@@ -518,9 +518,9 @@ class VmpSmaliBuilder {
         String callMethodName = getCallMethodNameByReturnType(returnType);
         String callReturnType = getCallReturnType(returnType);
 
-        // ==================== 璋冭瘯妯″紡妫€娴嬶細Java 绔幏鍙?FLAG_DEBUGGABLE ====================
+        // ==================== 调试模式检测：Java 端获取 FLAG_DEBUGGABLE ====================
         // 璋冪敤 VMP.isDebuggable()锛岀粨鏋滃瓨鍒?regIndex (v3)
-        // isDebuggable() 鍐呴儴閫氳繃 ActivityThread 鑾峰彇 Application 骞舵鏌?FLAG_DEBUGGABLE
+        // isDebuggable() 内部通过 ActivityThread 获取 Application 并检查 FLAG_DEBUGGABLE
         instructions.add(new ImmutableInstruction35c(
                 Opcode.INVOKE_STATIC,
                 3,
@@ -686,7 +686,7 @@ class VmpSmaliBuilder {
 
         DexFileFactory.writeDexFile(outFile.getAbsolutePath(), outDex);
 
-        System.out.println("鍐欏嚭閲嶇粍dex锛? + outFile.getAbsolutePath()
+        System.out.println("输出重写dex： + outFile.getAbsolutePath()
                 + " classCount=" + classes.size());
     }
     static int countClassMethods(ClassDef classDef) {
@@ -699,10 +699,10 @@ class VmpSmaliBuilder {
 
     static void replaceOriginalDexWithCombinedDex(File dexDir) throws IOException {
         if (dexDir == null || !dexDir.isDirectory()) {
-            throw new IOException("dex鐩綍涓嶅瓨鍦?);
+            throw new IOException("APK中未找到文件：" + entryName);
         }
 
-        // 1. 鍒犻櫎鍘熷 dex锛歝lasses.dex銆乧lasses2.dex銆乧lasses3.dex...
+        // 1. 删除原始 dex：classes.dex、classes2.dex、classes3.dex...
         int oldIndex = 1;
         while (true) {
             String oldName = oldIndex == 1 ? "classes.dex" : "classes" + oldIndex + ".dex";
@@ -713,14 +713,14 @@ class VmpSmaliBuilder {
             }
 
             if (!oldDex.delete()) {
-                throw new IOException("鍒犻櫎鍘熷dex澶辫触锛? + oldDex.getAbsolutePath());
+                throw new IOException("删除原始dex失败： + oldDex.getAbsolutePath());
             }
 
             System.out.println("宸插垹闄ゅ師濮媎ex锛? + oldDex.getName());
             oldIndex++;
         }
 
-        // 2. 灏嗘柊鐢熸垚鐨?dex 鏀瑰悕涓烘爣鍑?dex 鍚嶇О
+import com.android.tools.smali.dexlib2.AccessFlags;
         int newIndex = 1;
         while (true) {
             String tempName = newIndex == 1 ? "classes_c.dex" : "classes" + newIndex + "_c.dex";
@@ -734,7 +734,7 @@ class VmpSmaliBuilder {
             File finalDex = new File(dexDir, finalName);
 
             if (!tempDex.renameTo(finalDex)) {
-                throw new IOException("閲嶅懡鍚峝ex澶辫触锛?
+                throw new IOException("重命名dex失败：
                         + tempDex.getAbsolutePath()
                         + " -> "
                         + finalDex.getAbsolutePath());
@@ -745,7 +745,7 @@ class VmpSmaliBuilder {
         }
 
         if (newIndex == 1) {
-            throw new IOException("鏈壘鍒版柊鐢熸垚鐨?*_c.dex 鏂囦欢");
+            throw new IOException("未找到新生成的 *_c.dex 文件");
         }
     }
 

@@ -249,7 +249,7 @@ class VmpOpcodeMap {
 
             default:
                 throw new RuntimeException(
-                        "鏈敮鎸佺殑Opcode: "
+                        "不支持的Opcode: "
                                 + opcode.name()
                                 + " ordinal="
                                 + opcode.ordinal()
@@ -270,7 +270,7 @@ class VmpOpcodeMap {
         }
 
         if (opcodePoolIndex[0] >= opcodePool.size()) {
-            throw new IllegalStateException("鑷畾涔塷pcode鏁伴噺瓒呰繃255");
+            throw new IllegalStateException("自定义opcode数量超过255");
         }
 
         int vmOpcode = opcodePool.get(opcodePoolIndex[0]);
@@ -283,10 +283,10 @@ class VmpOpcodeMap {
 
         opcodeMap.put(realOpcode, entry);
 
-        System.out.println("鐢熸垚opcode鏄犲皠: 鑷畾涔塷pcode=0x"
+        System.out.println("生成opcode映射: 自定义opcode=0x"
                 + String.format("%02x", vmOpcode)
-                + " -> 鐪熷疄opcode=0x" + Integer.toHexString(realOpcode)
-                + " -> 鐪熷疄鎸囦护=" + realOpcodeName);
+                + " -> 真实opcode=0x" + Integer.toHexString(realOpcode)
+                + " -> 真实指令=" + realOpcodeName);
 
         return vmOpcode;
     }

@@ -49,7 +49,7 @@ class VmpMethodTracker {
 
         EXTRACTED_METHOD_MAP.put(key, info);
 
-        System.out.println("璁板綍寰卬ative閲嶅啓鏂规硶 key=" + key
+        System.out.println("记录待native重写方法 key=" + key
                 + " methodId=" + block.methodId
                 + " accessFlags=0x" + Integer.toHexString(block.accessFlags)
                 + " returnType=" + block.returnType);

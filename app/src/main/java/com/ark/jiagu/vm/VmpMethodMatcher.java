@@ -30,7 +30,7 @@ class VmpMethodMatcher {
 
             String[] parts = ruleText.split("\\.");
             if (parts.length < 3) {
-                System.out.println("璺宠繃闈炴硶瑙勫垯锛? + ruleText);
+                System.out.println("跳过非法规则：" + ruleText);
                 continue;
             }
 
@@ -53,10 +53,10 @@ class VmpMethodMatcher {
 
             rules.add(rule);
 
-            System.out.println("娣诲姞鎶藉彇瑙勫垯锛? + rule.raw
+            System.out.println("添加抽取规则：" + rule.raw
                     + " 鍖呭悕=" + rule.packageName
-                    + " 绫诲悕=" + rule.className
-                    + " 鏂规硶=" + rule.methodName);
+                    + " 类名=" + rule.className
+                    + " 方法=" + rule.methodName);
         }
 
         return rules;

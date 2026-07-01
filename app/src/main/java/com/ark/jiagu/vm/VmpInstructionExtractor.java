@@ -196,7 +196,7 @@ class VmpInstructionExtractor {
             WideLiteralInstruction insn = (WideLiteralInstruction) instruction;
             out.literalType = 2;
             // ==================== 甯搁噺姹犲姞瀵嗭紙榄旀敼#8锛?====================
-            // 鐢?codeUnitOffset 娲剧敓 XOR 瀵嗛挜锛屾瘡涓寚浠ょ殑瀛楅潰閲忓姞瀵嗕笉鍚?
+            // 用codeUnitOffset产生XOR密钥，每条指令的字面量加密密钥不同
             int litKey = (int)((codeUnitOffset * 0x9E3779B9L) & 0xFF);
             out.literalValue = insn.getWideLiteral() ^ litKey;
             // ====================================================
