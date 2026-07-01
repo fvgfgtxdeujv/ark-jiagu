@@ -75,7 +75,8 @@ struct VmpMethod {
     std::string methodName;
     std::string methodSignature;
     int accessFlags = 0;
-    int registerCount = 0;
+    int registerCount = 0;        // 已包含 aliasOffset
+    int registerAliasOffset = 0;  // 寄存器别名偏移量（反分析用）
     int paramCount = 0;
     std::string returnType;
     bool isStatic = false;
