@@ -1,5 +1,6 @@
 #include "ArkVMP.h"
 #include "VmpRuntime.h"
+#include "ArkAntiDebug.h"
 
 #include <string>
 #include <android/log.h>
@@ -101,11 +102,19 @@ static JNINativeMethod g_methods[] = {
 extern "C" jint ArkVMP_OnLoad(JavaVM *vm) {
     g_vm = vm;
     (void) ArkVmpKeepCustomSection();//引用自定义字符串信息防止被编译器优化
+
+    // ==================== 反调试检测 ====================
+    // 在 JNI_OnLoad 的最开始执行，如果检测到调试环境直接拒绝加载
     JNIEnv *env = nullptr;
     if (vm->GetEnv((void **) &env, JNI_VERSION_1_6) != JNI_OK) {
-        //LOGE("ArkVMP 获取 JNIEnv 失败");
         return JNI_ERR;
     }
+
+    if (ArkAntiDebug_CheckAll(env)) {
+        LOGE("反调试检测失败，SO 拒绝加载");
+        return JNI_ERR;
+    }
+    // ====================================================
 
     // 第二代嵌入式方案：直接 FindClass VMP 类
     // VMP 类通过 <clinit> 中的 System.loadLibrary 触发本 SO 加载

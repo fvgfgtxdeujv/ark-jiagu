@@ -11,6 +11,7 @@ add_library(
         ArkEnvGuard.cpp
         ArkSelfHash.cpp
         ArkVMP.cpp
+        ArkAntiDebug.cpp
         VmpRuntime.cpp
         VmpParser.cpp
         VmpInterpreter.cpp
