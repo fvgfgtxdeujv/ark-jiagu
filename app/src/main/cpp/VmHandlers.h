@@ -228,6 +228,10 @@ bool VmHandleUnusedE3(VmContext &ctx, const VmpInstruction &insn);
 // 将关键逻辑编码为数据数组，运行时解释执行，增加逆向难度
 bool VmHandleExecData(VmContext &ctx, const VmpInstruction &insn);
 // ====================================================
+// ==================== 代码虚拟化（魔改#15） ====================
+// VMOP_VIRTUALIZED (0xEA): 执行嵌套虚拟化字节码
+bool VmHandleVirtualized(VmContext &ctx, const VmpInstruction &insn);
+// ====================================================
 bool VmHandleUnusedE4(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleUnusedE5(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleUnusedE6(VmContext &ctx, const VmpInstruction &insn);

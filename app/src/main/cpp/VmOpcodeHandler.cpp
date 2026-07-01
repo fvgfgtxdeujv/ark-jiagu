@@ -242,7 +242,7 @@ static void initRealOpcodeHandlerTable() {
     g_realOpcodeHandlerTable[OP_UNUSED_E7] = VmHandleUnusedE7;
     g_realOpcodeHandlerTable[OP_UNUSED_E8] = VmHandleUnusedE8;
     g_realOpcodeHandlerTable[OP_UNUSED_E9] = VmHandleUnusedE9;
-    g_realOpcodeHandlerTable[OP_UNUSED_EA] = VmHandleUnusedEA;
+    g_realOpcodeHandlerTable[OP_UNUSED_EA] = VmHandleVirtualized; // 魔改#15: 代码虚拟化
     g_realOpcodeHandlerTable[OP_UNUSED_EB] = VmHandleUnusedEB;
     g_realOpcodeHandlerTable[OP_UNUSED_EC] = VmHandleUnusedEC;
     g_realOpcodeHandlerTable[OP_UNUSED_ED] = VmHandleUnusedED;

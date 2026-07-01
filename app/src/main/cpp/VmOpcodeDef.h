@@ -240,6 +240,11 @@
 #define OP_UNUSED_E8                      0xe8
 #define OP_UNUSED_E9                      0xe9
 #define OP_UNUSED_EA                      0xea
+// ==================== 代码虚拟化（魔改#15） ====================
+// VMOP_VIRTUALIZED (0xEA): 执行嵌套虚拟化字节码
+// 关键方法的内容被编码为自定义字节码，通过迷你VM解释执行
+#define OP_VIRTUALIZED                    0xea
+// ====================================================
 #define OP_UNUSED_EB                      0xeb
 #define OP_UNUSED_EC                      0xec
 #define OP_UNUSED_ED                      0xed

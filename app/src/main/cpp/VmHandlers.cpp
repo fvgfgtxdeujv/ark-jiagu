@@ -8871,8 +8871,8 @@ bool VmHandleExecData(VmContext &ctx, const VmpInstruction &insn) {
 
     // 执行迷你字节码
     int regA = 0, regB = 0;
-    if (!insn.registers.empty()) regA = insn.registers.get(0) % 16;
-    if (insn.registers.size() >= 2) regB = insn.registers.get(1) % 16;
+    if (!insn.registers.empty()) regA = insn.registers[0] % 16;
+    if (insn.registers.size() >= 2) regB = insn.registers[1] % 16;
 
     for (int i = 0; i < dataLen && i < (int)encryptedData.size(); i++) {
         unsigned char encryptedByte = (unsigned char)encryptedData[i];
@@ -8903,6 +8903,86 @@ bool VmHandleExecData(VmContext &ctx, const VmpInstruction &insn) {
                 }
                 break;
         }
+    }
+
+    return true;
+}
+// ====================================================
+
+// ==================== 代码虚拟化（魔改#15） ====================
+// VMOP_VIRTUALIZED (0xEA): 执行嵌套虚拟化字节码
+// 关键方法的内容被编码为自定义字节码，通过迷你VM解释执行
+// 自定义字节码集：
+//   0x00: NOP
+//   0x01: LOAD_CONST reg, value  (将常量加载到虚拟寄存器)
+//   0x02: ADD regA, regB        (virtual_reg[A] += virtual_reg[B])
+//   0x03: RETURN reg            (返回虚拟寄存器的值到真实寄存器)
+//   字节码使用 XOR 混淆，运行时解密执行
+bool VmHandleVirtualized(VmContext &ctx, const VmpInstruction &insn) {
+    if (insn.referenceData.empty() || insn.extraReferenceData.empty()) {
+        return true; // 没有虚拟化数据，当作NOP
+    }
+
+    // 解密密钥从 extraReferenceData 派生
+    unsigned char vKey = 0;
+    for (int i = 0; i < (int)insn.extraReferenceData.size() && i < 4; i++) {
+        vKey ^= (unsigned char)insn.extraReferenceData[i];
+    }
+    vKey &= 0xFF;
+
+    // 获取目标真实寄存器（存放返回值）
+    int targetReg = 0;
+    if (!insn.registers.empty()) {
+        targetReg = insn.registers[0] % 16;
+    }
+
+    // 迷你VM：4个虚拟寄存器 + 1个栈
+    int vRegs[4] = {0};
+    int vStack[16] = {0};
+    int sp = 0;
+
+    const std::string &encrypted = insn.referenceData;
+    int pc = 0;
+
+    while (pc < (int)encrypted.length()) {
+        unsigned char bytecode = (unsigned char)encrypted[pc] ^ vKey;
+        pc++;
+        int opcode = bytecode & 0x03; // 低2位是操作码
+        int operand = (bytecode >> 2) & 0x3F; // 剩余6位是操作数
+
+        switch (opcode) {
+            case 0: // NOP
+                break;
+            case 1: // LOAD_CONST reg, value
+                if (operand < 4) {
+                    if (pc < (int)encrypted.length()) {
+                        vRegs[operand] = (unsigned char)encrypted[pc] ^ vKey;
+                        pc++;
+                    }
+                }
+                break;
+            case 2: // ADD regA += regB
+                if (operand < 4) {
+                    int regB = (pc < (int)encrypted.length())
+                            ? ((unsigned char)encrypted[pc] ^ vKey) & 0x03 : 0;
+                    if (regB < 4) {
+                        vRegs[operand] = (vRegs[operand] + vRegs[regB]) & 0xFFFFFFFF;
+                    }
+                    pc++;
+                }
+                break;
+            case 3: // RETURN reg
+                if (operand < 4 && sp < 16) {
+                    vStack[sp++] = vRegs[operand];
+                }
+                break;
+        }
+    }
+
+    // 将结果写回真实寄存器
+    if (sp > 0 && targetReg < (int)ctx.regs.size()) {
+        ctx.regs[targetReg].intValue = vStack[sp - 1];
+        ctx.regs[targetReg].kind = VM_REG_INT;
     }
 
     return true;

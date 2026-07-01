@@ -89,6 +89,13 @@ struct VmpMethod {
     unsigned char methodHash[32];
     bool hasMethodHash = false;
     // ====================================================
+
+    // ==================== 代码虚拟化（魔改#15） ====================
+    // 标记该方法已被二次虚拟化
+    // 虚拟化方法包含自定义字节码，通过 VmHandleVirtualized 解释执行
+    bool isVirtualized = false;
+    std::string virtualizedBytecode; // 加密的自定义字节码
+    // ====================================================
 };
 
 struct VmpBinContext {
