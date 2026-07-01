@@ -879,23 +879,53 @@ public class VmpUtils {
 
                 writeIntLE(raf, block.instructions.size());
 
+                // ==================== 自解密密钥（魔改#18） ====================
+                byte[] blockKey = new byte[4];
+                new java.security.SecureRandom().nextBytes(blockKey);
+                int blockKeyInt = ((blockKey[0] & 0xFF)
+                        | ((blockKey[1] & 0xFF) << 8)
+                        | ((blockKey[2] & 0xFF) << 16)
+                        | ((blockKey[3] & 0xFF) << 24));
+                writeIntLE(raf, blockKeyInt);
+                // ====================================================
+
+                long prevLiteralValue = 0;
+                boolean hasPrevLiteral = false;
+
                 for (ExtractInstruction insn : block.instructions) {
                     writeIntLE(raf, insn.codeUnitOffset);
-                    // vmOpcode 使用 XOR 密钥混淆，每次加固结果不同
                     writeIntLE(raf, insn.vmOpcode ^ xorByte(opcodeKey, 8));
                     writeStringLE(raf, insn.formatName);
                     writeIntLE(raf, insn.codeUnits);
 
                     writeIntLE(raf, insn.registers.size());
                     for (Integer reg : insn.registers) {
-                        writeIntLE(raf, reg);
+                        writeIntLE(raf, reg ^ (blockKeyInt & 0xFF));
                     }
 
                     writeIntLE(raf, insn.literalType);
-                    writeLongLE(raf, insn.literalValue);
+
+                    // ==================== 指令重叠（魔改#19） ====================
+                    // 如果当前指令的字面量与前一条相同，写入重叠标记并跳过重复数据
+                    // 使相邻指令在bin文件中共享数据，增加静态分析难度
+                    boolean isOverlap = hasPrevLiteral
+                            && insn.literalType > 0
+                            && (insn.literalValue ^ (blockKeyInt & 0xFFFFFFFFL))
+                            == (prevLiteralValue ^ (blockKeyInt & 0xFFFFFFFFL));
+                    writeIntLE(raf, isOverlap ? 1 : 0); // 重叠标志
+
+                    if (isOverlap) {
+                        // 重叠：不写入字面量数据，继承前一条指令的值
+                    } else {
+                        long encryptedLiteral = insn.literalValue ^ (blockKeyInt & 0xFFFFFFFFL);
+                        writeLongLE(raf, encryptedLiteral);
+                        prevLiteralValue = insn.literalValue;
+                        hasPrevLiteral = true;
+                    }
+                    // ====================================================
 
                     writeIntLE(raf, insn.offsetType);
-                    writeIntLE(raf, insn.offsetValue);
+                    writeIntLE(raf, insn.offsetValue ^ (blockKeyInt & 0xFF));
 
                     writeIntLE(raf, insn.referenceType);
                     writeStringLE(raf, insn.referenceData);

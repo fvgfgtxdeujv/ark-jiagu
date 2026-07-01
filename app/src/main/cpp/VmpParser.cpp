@@ -547,6 +547,13 @@ bool VmpParser_FindMethod(
 
     if (!readIntLE(g_bin.rawData, pos, instructionCount)) return false;
 
+    // ==================== 自解密密钥读取（魔改#18） ====================
+    // 读取每个方法块独立的 XOR 密钥
+    int blockKeyInt = 0;
+    if (!readIntLE(g_bin.rawData, pos, blockKeyInt)) return false;
+    unsigned char blockKey = (unsigned char)(blockKeyInt & 0xFF);
+    // ====================================================
+
     for (int i = 0; i < instructionCount; i++) {
         VmpInstruction insn;
 
@@ -579,13 +586,28 @@ bool VmpParser_FindMethod(
         for (int r = 0; r < registerCount; r++) {
             int reg = 0;
             if (!readIntLE(g_bin.rawData, pos, reg)) return false;
-            insn.registers.push_back(reg);
+            // ==================== 自解密（魔改#18） ====================
+            insn.registers.push_back(reg ^ (blockKey & 0xFF));
+            // ====================================================
         }
 
         int64_t literalValue = 0;
 
         if (!readIntLE(g_bin.rawData, pos, insn.literalType)) return false;
-        if (!readLongLE(g_bin.rawData, pos, literalValue)) return false;
+
+        // ==================== 指令重叠（魔改#19） ====================
+        // 读取重叠标志：1=与前一条指令共享字面量，0=独立字面量
+        int overlapFlag = 0;
+        if (!readIntLE(g_bin.rawData, pos, overlapFlag)) return false;
+
+        if (overlapFlag != 0 && i > 0) {
+            // 重叠模式：从前一条指令复制字面量，不读取文件
+            literalValue = method.instructions[i - 1].literalValue;
+        } else {
+            // 正常读取字面量
+            if (!readLongLE(g_bin.rawData, pos, literalValue)) return false;
+        }
+        // ====================================================
 
         // ==================== 常量池解密（魔改#8） ====================
         // 用 codeUnitOffset 派生 XOR 密钥解密字面量
@@ -595,10 +617,19 @@ bool VmpParser_FindMethod(
         }
         // ====================================================
 
+        // ==================== 自解密（魔改#18） ====================
+        // 用块密钥 XOR 解密字面量和偏移量
+        literalValue ^= (int64_t)(blockKey & 0xFF);
+        // ====================================================
+
         insn.literalValue = literalValue;
 
         if (!readIntLE(g_bin.rawData, pos, insn.offsetType)) return false;
         if (!readIntLE(g_bin.rawData, pos, insn.offsetValue)) return false;
+
+        // ==================== 自解密（魔改#18） ====================
+        insn.offsetValue ^= (blockKey & 0xFF);
+        // ====================================================
 
         if (!readIntLE(g_bin.rawData, pos, insn.referenceType)) return false;
         if (!readStringLE(g_bin.rawData, pos, insn.referenceData)) return false;
