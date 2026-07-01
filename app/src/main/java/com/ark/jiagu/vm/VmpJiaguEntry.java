@@ -374,6 +374,23 @@ public class VmpJiaguEntry {
                 throw new IOException("当前解析器只支持version=5，当前version=" + version);
             }
 
+            // ==================== 读取 opcode 随机化密钥 ====================
+            byte[] opcodeKey = new byte[16];
+            int keyBytesRead = raf.read(opcodeKey);
+            if (keyBytesRead != 16) {
+                throw new IOException("读取opcode密钥失败，期望16字节，实际" + keyBytesRead + "字节");
+            }
+
+            // 辅助方法：用密钥解密 int
+            java.util.function.IntUnaryOperator decrypt = (encrypted) -> {
+                int result = encrypted;
+                for (int i = 0; i < 4; i++) {
+                    result ^= (opcodeKey[i] & 0xff);
+                }
+                return result;
+            };
+            // ====================================================
+
             int opcodeMapCount = readIntLE(raf);
             System.out.println("opcodeMapCount=" + opcodeMapCount);
 
@@ -381,9 +398,13 @@ public class VmpJiaguEntry {
 
             System.out.println("========== 解析opcode映射表 ==========");
             for (int i = 0; i < opcodeMapCount; i++) {
-                int vmOpcode = readIntLE(raf);
-                int realOpcode = readIntLE(raf);
+                int encryptedVmOpcode = readIntLE(raf);
+                int encryptedRealOpcode = readIntLE(raf);
                 String realOpcodeName = readStringLE(raf);
+
+                // 用密钥解密 opcode 值
+                int vmOpcode = decrypt.applyAsInt(encryptedVmOpcode);
+                int realOpcode = decrypt.applyAsInt(encryptedRealOpcode);
 
                 OpcodeMapEntry entry = new OpcodeMapEntry();
                 entry.vmOpcode = vmOpcode;
@@ -479,7 +500,11 @@ public class VmpJiaguEntry {
                 long insnOffset = raf.getFilePointer();
 
                 int codeUnitOffset = readIntLE(raf);
-                int vmOpcode = readIntLE(raf);
+
+                // 读取加密的 vmOpcode 并用密钥解密
+                int encryptedVmOpcode = readIntLE(raf);
+                int vmOpcode = encryptedVmOpcode ^ (opcodeKey[8] & 0xff);
+
                 String formatName = readStringLE(raf);
                 int codeUnits = readIntLE(raf);
 

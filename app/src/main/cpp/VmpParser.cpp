@@ -331,6 +331,23 @@ static bool parseVmpHeaderAndIndex() {
 
     g_bin.version = version;
 
+    // ==================== 读取 opcode 随机化密钥 ====================
+    // 16 字节密钥紧跟在 version 后面，用于解密 opcode 映射表
+    if (pos + 16 > data.size()) {
+        //LOGE("opcode密钥区域超出文件边界");
+        return false;
+    }
+    memcpy(g_bin.opcodeKey, &data[pos], 16);
+    g_bin.hasOpcodeKey = true;
+    pos += 16;
+    // ====================================================
+
+    // 辅助函数：用密钥解密 int 值
+    auto decryptInt = [&](int value, int keyOffset) -> int {
+        if (!g_bin.hasOpcodeKey) return value;
+        return value ^ (g_bin.opcodeKey[keyOffset % 16] & 0xff);
+    };
+
     int opcodeMapCount = 0;
     if (!readIntLE(data, pos, opcodeMapCount)) {
         //LOGE("读取opcodeMapCount失败");
@@ -360,6 +377,10 @@ static bool parseVmpHeaderAndIndex() {
             //LOGE("读取realOpcodeName失败 index=%d", i);
             return false;
         }
+
+        // 用密钥解密 opcode 值
+        vmOpcode = decryptInt(vmOpcode, 0);
+        realOpcode = decryptInt(realOpcode, 4);
 
         VmpOpcodeMapEntry entry;
         entry.vmOpcode = vmOpcode;
@@ -532,7 +553,14 @@ bool VmpParser_FindMethod(
         int registerCount = 0;
 
         if (!readIntLE(g_bin.rawData, pos, insn.codeUnitOffset)) return false;
-        if (!readIntLE(g_bin.rawData, pos, insn.vmOpcode)) return false;
+
+        // 读取加密的 vmOpcode 并用密钥解密
+        int encryptedVmOpcode = 0;
+        if (!readIntLE(g_bin.rawData, pos, encryptedVmOpcode)) return false;
+        insn.vmOpcode = encryptedVmOpcode;
+        if (g_bin.hasOpcodeKey) {
+            insn.vmOpcode ^= (g_bin.opcodeKey[8 % 16] & 0xff);
+        }
 
         auto opcodeIt = g_bin.vmOpcodeMap.find(insn.vmOpcode);
         if (opcodeIt == g_bin.vmOpcodeMap.end()) {

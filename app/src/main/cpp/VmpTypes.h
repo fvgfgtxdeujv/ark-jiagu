@@ -88,6 +88,10 @@ struct VmpBinContext {
     bool loaded = false;
     int version = 0;
 
+    // opcode 随机化密钥（16字节），用于解密 bin 中的 opcode 映射
+    unsigned char opcodeKey[16];
+    bool hasOpcodeKey = false;
+
     std::vector<unsigned char> rawData;
 
     // 随机 vmOpcode -> 真实 opcode / 真实 opname
@@ -95,7 +99,7 @@ struct VmpBinContext {
 
     std::unordered_map<int, VmpMethodIndex> methodIndexMap;
 
-    std::unordered_map<int, VmpMethod> methodCache;
+    std::unordered_map<int, VmpMethod> method_cache;
 };
 
 #endif

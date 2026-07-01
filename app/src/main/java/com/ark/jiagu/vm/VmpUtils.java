@@ -828,11 +828,20 @@ public class VmpUtils {
             writeIntLE(raf, 5);
 
             writeIntLE(raf, opcodeMap.size());
+
+            // ==================== opcode 随机化 ====================
+            // 生成 16 字节随机密钥，对 opcode 映射表和指令中的 vmOpcode 进行 XOR
+            // 每次加固生成不同的密钥，使 bin 文件中的 opcode 值每次不同
+            byte[] opcodeKey = new byte[16];
+            new java.security.SecureRandom().nextBytes(opcodeKey);
+            raf.write(opcodeKey);
+
             for (OpcodeMapEntry entry : opcodeMap.values()) {
-                writeIntLE(raf, entry.vmOpcode);
-                writeIntLE(raf, entry.realOpcode);
+                writeIntLE(raf, entry.vmOpcode ^ xorByte(opcodeKey, 0));
+                writeIntLE(raf, entry.realOpcode ^ xorByte(opcodeKey, 4));
                 writeStringLE(raf, entry.realOpcodeName);
             }
+            // ====================================================
 
             writeIntLE(raf, blocks.size());
 
@@ -866,7 +875,8 @@ public class VmpUtils {
 
                 for (ExtractInstruction insn : block.instructions) {
                     writeIntLE(raf, insn.codeUnitOffset);
-                    writeIntLE(raf, insn.vmOpcode);
+                    // vmOpcode 使用 XOR 密钥混淆，每次加固结果不同
+                    writeIntLE(raf, insn.vmOpcode ^ xorByte(opcodeKey, 8));
                     writeStringLE(raf, insn.formatName);
                     writeIntLE(raf, insn.codeUnits);
 
@@ -1116,6 +1126,13 @@ public class VmpUtils {
     private static void writeBytes(RandomAccessFile out, byte[] data) throws IOException {
         out.write(data);
     }
+
+    // ==================== opcode 随机化辅助 ====================
+    // 从密钥数组中按索引取字节，用于 XOR 加密 opcode 值
+    private static int xorByte(byte[] key, int index) {
+        return key[index % key.length] & 0xff;
+    }
+    // ====================================================
 
     static int readIntLE(RandomAccessFile in) throws IOException {
         int b0 = in.read();
