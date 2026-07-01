@@ -21,6 +21,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Random;
 import com.android.tools.smali.dexlib2.immutable.ImmutableClassDef;
 import com.android.tools.smali.dexlib2.immutable.ImmutableDexFile;
 import com.android.tools.smali.dexlib2.immutable.ImmutableMethod;
@@ -184,7 +185,10 @@ public class VmpJiaguEntry {
                     }
 
                     int codeUnitOffset = 0;
+                    Random fakeRandom = new Random(System.currentTimeMillis() ^ instruction.hashCode());
+
                     for (Instruction instruction : impl.getInstructions()) {
+                        // 添加真实指令
                         block.instructions.add(buildExtractInstruction(
                                 instruction,
                                 codeUnitOffset,
@@ -194,6 +198,32 @@ public class VmpJiaguEntry {
                         ));
 
                         codeUnitOffset += instruction.getCodeUnits();
+
+                        // ==================== 假指令插入（魔改#6） ====================
+                        // 在每条真实指令后插入 0~2 条 NOP 假指令
+                        // 假指令使用已分配的 vmOpcode，VM 执行时无害但增加分析难度
+                        int fakeCount = fakeRandom.nextInt(3); // 0, 1, 或 2 条
+                        for (int f = 0; f < fakeCount; f++) {
+                            ExtractInstruction fakeInsn = new ExtractInstruction();
+                            fakeInsn.codeUnitOffset = codeUnitOffset;
+                            // 使用 NOP 的真实 opcode (0x00) 对应的 vmOpcode
+                            fakeInsn.vmOpcode = getOrCreateVmOpcode(
+                                    Opcode.NOP, opcodeMap, opcodePool, opcodePoolIndex
+                            );
+                            fakeInsn.formatName = "NOP(fake)";
+                            fakeInsn.codeUnits = 1; // NOP 占 1 个 code unit
+                            fakeInsn.literalType = 0;
+                            fakeInsn.literalValue = 0;
+                            fakeInsn.offsetType = 0;
+                            fakeInsn.offsetValue = 0;
+                            fakeInsn.referenceType = 0;
+                            fakeInsn.referenceData = null;
+                            fakeInsn.extraReferenceType = 0;
+                            fakeInsn.extraReferenceData = null;
+                            block.instructions.add(fakeInsn);
+                            codeUnitOffset += 1;
+                        }
+                        // ====================================================
                     }
 
                     block.tryBlocks = buildExtractTryBlocks(impl);
