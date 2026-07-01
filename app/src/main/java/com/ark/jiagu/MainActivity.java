@@ -100,6 +100,16 @@ public class MainActivity extends ComponentActivity {
     private static final String KEY_JKS_KEY_PASS = "jks_key_pass";
     private static final String KEY_STUB_CLASS_NAME = "stub_class_name";
     private static final String DEFAULT_STUB_CLASS_NAME = "com.ark.safe.StubApp";
+    private static final String KEY_VMP_CLASS_NAME = "vmp_class_name";
+    private static final String DEFAULT_VMP_CLASS_NAME = "com.ark.safe.VMP";
+    private static final String KEY_METHOD_RULES = "method_rules";
+    private static final String DEFAULT_METHOD_RULES =
+            "# 方法规则配置（每行一个，支持通配符 *）\n"
+            + "# 格式：包名.类名.方法名\n"
+            + "# 示例：\n"
+            + "com.example.MainActivity.onCreate\n"
+            + "com.example.LoginActivity.onResume\n"
+            + "com.example.Payment.*\n";
     private static final int REQ_STORAGE_PERMISSION = 10086;
     private static final String DEBUG_RAW_DEX_DIR = "原始dex";
     private static final String DEBUG_VMP_DEX_DIR = "已抽成vmp的dex";
@@ -116,12 +126,6 @@ public class MainActivity extends ComponentActivity {
 
     private native byte[] intToLe4(int value);
     private SoNamePreset[] SO_NAME_PRESETS;
-    private native void buildEncryptedShellDex(
-            File dexDir,
-            File shellDexFile,
-            String realApplicationName,
-            byte[] signHash64
-    ) throws Exception;
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -343,6 +347,8 @@ public class MainActivity extends ComponentActivity {
     private static class ArkSettings {
         String soName;
         String stubClassName;
+        String vmpClassName;
+        String methodRules;
         String savePath;
         boolean Debug;
         boolean autoSign;
@@ -356,6 +362,8 @@ public class MainActivity extends ComponentActivity {
         ArkSettings(
                 String soName,
                 String stubClassName,
+                String vmpClassName,
+                String methodRules,
                 String savePath,
                 boolean Debug,
                 boolean autoSign,
@@ -367,6 +375,8 @@ public class MainActivity extends ComponentActivity {
         ) {
             this.soName = soName;
             this.stubClassName = stubClassName;
+            this.vmpClassName = vmpClassName;
+            this.methodRules = methodRules;
             this.savePath = savePath;
             this.Debug = Debug;
             this.autoSign = autoSign;
@@ -385,6 +395,8 @@ public class MainActivity extends ComponentActivity {
 
         String soName = sp.getString(KEY_SO_NAME, DEFAULT_SO_NAME);
         String stubClassName = sp.getString(KEY_STUB_CLASS_NAME, DEFAULT_STUB_CLASS_NAME);
+        String vmpClassName = sp.getString(KEY_VMP_CLASS_NAME, DEFAULT_VMP_CLASS_NAME);
+        String methodRules = sp.getString(KEY_METHOD_RULES, DEFAULT_METHOD_RULES);
         String savePath = sp.getString(KEY_SAVE_PATH, defaultSavePath);
         boolean Debug = sp.getBoolean(KEY_DEBUG, false);
         boolean autoSign = sp.getBoolean(KEY_AUTO_SIGN, false);
@@ -403,6 +415,14 @@ public class MainActivity extends ComponentActivity {
             stubClassName = DEFAULT_STUB_CLASS_NAME;
         }
 
+        if (vmpClassName == null || vmpClassName.trim().isEmpty()) {
+            vmpClassName = DEFAULT_VMP_CLASS_NAME;
+        }
+
+        if (methodRules == null) {
+            methodRules = DEFAULT_METHOD_RULES;
+        }
+
         if (savePath == null || savePath.trim().isEmpty()) {
             savePath = defaultSavePath;
         }
@@ -410,6 +430,8 @@ public class MainActivity extends ComponentActivity {
         return new ArkSettings(
                 soName,
                 stubClassName,
+                vmpClassName,
+                methodRules,
                 savePath,
                 Debug,
                 autoSign,
@@ -423,6 +445,8 @@ public class MainActivity extends ComponentActivity {
     private void saveArkSettings(
             String soName,
             String stubClassName,
+            String vmpClassName,
+            String methodRules,
             String savePath,
             boolean Debug,
             boolean autoSign,
@@ -437,6 +461,8 @@ public class MainActivity extends ComponentActivity {
         sp.edit()
                 .putString(KEY_SO_NAME, soName)
                 .putString(KEY_STUB_CLASS_NAME, stubClassName)
+                .putString(KEY_VMP_CLASS_NAME, vmpClassName)
+                .putString(KEY_METHOD_RULES, methodRules)
                 .putString(KEY_SAVE_PATH, savePath)
                 .putBoolean(KEY_DEBUG, Debug)
                 .putBoolean(KEY_AUTO_SIGN, autoSign)
@@ -461,6 +487,36 @@ public class MainActivity extends ComponentActivity {
         }
 
         return DEFAULT_STUB_CLASS_NAME;
+    }
+
+    private String getValidVmpClassNameFromSettings() {
+        try {
+            ArkSettings settings = readArkSettings();
+
+            if (settings != null
+                    && settings.vmpClassName != null
+                    && !settings.vmpClassName.trim().isEmpty()) {
+                return settings.vmpClassName.trim();
+            }
+        } catch (Exception ignored) {
+        }
+
+        return DEFAULT_VMP_CLASS_NAME;
+    }
+
+    private String getMethodRulesFromSettings() {
+        try {
+            ArkSettings settings = readArkSettings();
+
+            if (settings != null
+                    && settings.methodRules != null
+                    && !settings.methodRules.trim().isEmpty()) {
+                return settings.methodRules.trim();
+            }
+        } catch (Exception ignored) {
+        }
+
+        return DEFAULT_METHOD_RULES.trim();
     }
 
     private boolean isValidJksSettings(String jksPath, String storePass, String alias, String keyPass) {
@@ -585,6 +641,13 @@ public class MainActivity extends ComponentActivity {
         return true;
     }
 
+    private boolean isValidVmpClassName(String className) {
+        if (className == null || className.trim().isEmpty()) {
+            return false;
+        }
+        return isValidStubClassName(className);
+    }
+
     private void showSettingsDialog() {
         View dialogView = getLayoutInflater().inflate(R.layout.dialog_settings, null);
 
@@ -605,9 +668,53 @@ public class MainActivity extends ComponentActivity {
         android.widget.ImageButton btnClearStubClassName = dialogView.findViewById(R.id.btnClearStubClassName);
         android.widget.ImageButton btnClearSavePath = dialogView.findViewById(R.id.btnClearSavePath);
 
+        // VMP 类名输入框
+        android.widget.EditText etVmpClassName = new android.widget.EditText(this);
+        etVmpClassName.setHint("VMP 类名，如 com.ark.safe.VMP");
+        etVmpClassName.setSingleLine(true);
+
+        // 方法规则输入框（多行）
+        android.widget.EditText etMethodRules = new android.widget.EditText(this);
+        etMethodRules.setHint("# 每行一条规则\n# 格式：包名.类名.方法名\n# 示例：com.example.Main.onCreate");
+        etMethodRules.setMinLines(6);
+        etMethodRules.setMaxLines(12);
+        etMethodRules.setGravity(android.view.Gravity.TOP);
+        android.widget.ScrollView methodRulesScroll = new android.widget.ScrollView(this);
+        methodRulesScroll.addView(etMethodRules);
+
+        // 将新字段添加到对话框
+        android.widget.LinearLayout dialogContent = dialogView.findViewById(R.id.dialog_content);
+        if (dialogContent != null) {
+            android.widget.TextView tvVmpLabel = new android.widget.TextView(this);
+            tvVmpLabel.setText("VMP 类名（第二代嵌入式方案）：");
+            tvVmpLabel.setTextSize(14);
+            dialogContent.addView(tvVmpLabel);
+
+            android.widget.LinearLayout.LayoutParams lp = new android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                    android.widget.LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            lp.topMargin = 4;
+            dialogContent.addView(etVmpClassName, lp);
+
+            android.widget.TextView tvRulesLabel = new android.widget.TextView(this);
+            tvRulesLabel.setText("方法保护规则（每行一条，#开头为注释）：");
+            tvRulesLabel.setTextSize(14);
+            tvRulesLabel.setPadding(0, 16, 0, 4);
+            dialogContent.addView(tvRulesLabel);
+
+            android.widget.LinearLayout.LayoutParams scrollLp = new android.widget.LinearLayout.LayoutParams(
+                    android.widget.LinearLayout.LayoutParams.MATCH_PARENT,
+                    (int) (200 * getResources().getDisplayMetrics().density)
+            );
+            dialogContent.addView(methodRulesScroll, scrollLp);
+        }
+
 
         ArkSettings settings = readArkSettings();
         etStubClassName.setText(settings.stubClassName);
+        etVmpClassName.setText(settings.vmpClassName);
+        etMethodRules.setText(settings.methodRules);
         etSoName.setText(settings.soName);
         etSavePath.setText(settings.savePath);
         swAutoSign.setChecked(settings.autoSign);
@@ -650,6 +757,8 @@ public class MainActivity extends ComponentActivity {
         btnSaveSettings.setOnClickListener(v -> {
             String soName = etSoName.getText().toString().trim();
             String stubClassName = etStubClassName.getText().toString().trim();
+            String vmpClassName = etVmpClassName.getText().toString().trim();
+            String methodRules = etMethodRules.getText().toString();
             String savePath = etSavePath.getText().toString().trim();
             boolean Debug = swDebug.isChecked();
             boolean autoSign = swAutoSign.isChecked();
@@ -663,6 +772,10 @@ public class MainActivity extends ComponentActivity {
 
             if (!isValidSoName(soName)) {
                 Toast.makeText(this, "so名称不合法，只能使用字母、数字、下划线，不要带lib和.so", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (!isValidVmpClassName(vmpClassName)) {
+                Toast.makeText(this, "VMP类名不合法", Toast.LENGTH_LONG).show();
                 return;
             }
             if (!isValidStubClassName(stubClassName)) {
@@ -694,6 +807,8 @@ public class MainActivity extends ComponentActivity {
             saveArkSettings(
                     soName,
                     stubClassName,
+                    vmpClassName,
+                    methodRules,
                     savePath,
                     Debug,
                     autoSign,
@@ -854,186 +969,9 @@ public class MainActivity extends ComponentActivity {
     }
 
     /**
-     * 在指定目录生成壳 classes.dex 此版本是attach直接调用
+     * 第一代壳方法 generateShellDex 已移除
+     * 第二代嵌入式方案：VMP 类直接注入原始 dex，无需单独生成壳 dex
      */
-    private File generateShellDex(File outputDir) throws Exception {
-        if (outputDir == null) {
-            throw new IllegalArgumentException("输出目录为空");
-        }
-
-        if (!outputDir.exists() && !outputDir.mkdirs()) {
-            throw new RuntimeException("创建输出目录失败：" + outputDir.getAbsolutePath());
-        }
-
-        File outputDex = new File(outputDir, "classes.dex");
-
-        String customStubClassName = getValidStubClassNameFromSettings();
-
-        String stubClass = "L" + customStubClassName.replace('.', '/') + ";";
-        String applicationClass = "Landroid/app/Application;";
-        String contextClass = "Landroid/content/Context;";
-
-        DexPool dexPool = new DexPool(Opcodes.getDefault());
-
-        ImmutableMethod clinitMethod = new ImmutableMethod(
-                stubClass,
-                "<clinit>",
-                Collections.<ImmutableMethodParameter>emptyList(),
-                "V",
-                AccessFlags.STATIC.getValue() | AccessFlags.CONSTRUCTOR.getValue(),
-                Collections.emptySet(),
-                null,
-                new ImmutableMethodImplementation(
-                        2,
-                        Arrays.asList(
-                                new ImmutableInstruction21c(
-                                        Opcode.CONST_STRING,
-                                        0,
-                                        new ImmutableStringReference("ark")
-                                ),
-                                new ImmutableInstruction21c(
-                                        Opcode.CONST_STRING,
-                                        1,
-                                        new ImmutableStringReference(customStubClassName)
-                                ),
-                                new ImmutableInstruction35c(
-                                        Opcode.INVOKE_STATIC,
-                                        2,
-                                        0,
-                                        1,
-                                        0,
-                                        0,
-                                        0,
-                                        new ImmutableMethodReference(
-                                                "Ljava/lang/System;",
-                                                "setProperty",
-                                                Arrays.asList(
-                                                        "Ljava/lang/String;",
-                                                        "Ljava/lang/String;"
-                                                ),
-                                                "Ljava/lang/String;"
-                                        )
-                                ),
-                                new ImmutableInstruction21c(
-                                        Opcode.CONST_STRING,
-                                        0,
-                                        new ImmutableStringReference(getValidSoNameFromSettings())
-                                ),
-                                new ImmutableInstruction35c(
-                                        Opcode.INVOKE_STATIC,
-                                        1,
-                                        0,
-                                        0,
-                                        0,
-                                        0,
-                                        0,
-                                        new ImmutableMethodReference(
-                                                "Ljava/lang/System;",
-                                                "loadLibrary",
-                                                Collections.singletonList("Ljava/lang/String;"),
-                                                "V"
-                                        )
-                                ),
-                                new ImmutableInstruction10x(Opcode.RETURN_VOID)
-                        ),
-                        Collections.emptyList(),
-                        Collections.emptyList()
-                )
-        );
-
-        ImmutableMethod initMethod = new ImmutableMethod(
-                stubClass,
-                "<init>",
-                Collections.<ImmutableMethodParameter>emptyList(),
-                "V",
-                AccessFlags.PUBLIC.getValue() | AccessFlags.CONSTRUCTOR.getValue(),
-                Collections.emptySet(),
-                null,
-                new ImmutableMethodImplementation(
-                        1,
-                        Arrays.asList(
-                                new ImmutableInstruction35c(
-                                        Opcode.INVOKE_DIRECT,
-                                        1,
-                                        0,
-                                        0,
-                                        0,
-                                        0,
-                                        0,
-                                        new ImmutableMethodReference(
-                                                applicationClass,
-                                                "<init>",
-                                                Collections.<String>emptyList(),
-                                                "V"
-                                        )
-                                ),
-                                new ImmutableInstruction10x(Opcode.RETURN_VOID)
-                        ),
-                        Collections.emptyList(),
-                        Collections.emptyList()
-                )
-        );
-
-        ImmutableMethod attachBaseContextMethod = new ImmutableMethod(
-                stubClass,
-                "attachBaseContext",
-                Collections.singletonList(
-                        new ImmutableMethodParameter(
-                                contextClass,
-                                Collections.emptySet(),
-                                null
-                        )
-                ),
-                "V",
-                AccessFlags.PROTECTED.getValue() | AccessFlags.NATIVE.getValue(),
-                Collections.emptySet(),
-                null,
-                null
-        );
-
-        List<MethodParameter> vmCommonParams = Arrays.asList(
-                new ImmutableMethodParameter("I", Collections.emptySet(), null),
-                new ImmutableMethodParameter("Ljava/lang/Object;", Collections.emptySet(), null),
-                new ImmutableMethodParameter("[Ljava/lang/Object;", Collections.emptySet(), null)
-        );
-
-        int vmNativeFlags = AccessFlags.PUBLIC.getValue()
-                | AccessFlags.STATIC.getValue()
-                | AccessFlags.NATIVE.getValue();
-
-        List<ImmutableMethod> methods = new ArrayList<>();
-
-        methods.add(clinitMethod);
-        methods.add(initMethod);
-        methods.add(attachBaseContextMethod);
-
-        methods.add(new ImmutableMethod(stubClass, "callVoid", vmCommonParams, "V", vmNativeFlags, null, null, null));
-        methods.add(new ImmutableMethod(stubClass, "callBoolean", vmCommonParams, "Z", vmNativeFlags, null, null, null));
-        methods.add(new ImmutableMethod(stubClass, "callByte", vmCommonParams, "B", vmNativeFlags, null, null, null));
-        methods.add(new ImmutableMethod(stubClass, "callShort", vmCommonParams, "S", vmNativeFlags, null, null, null));
-        methods.add(new ImmutableMethod(stubClass, "callChar", vmCommonParams, "C", vmNativeFlags, null, null, null));
-        methods.add(new ImmutableMethod(stubClass, "callInt", vmCommonParams, "I", vmNativeFlags, null, null, null));
-        methods.add(new ImmutableMethod(stubClass, "callLong", vmCommonParams, "J", vmNativeFlags, null, null, null));
-        methods.add(new ImmutableMethod(stubClass, "callFloat", vmCommonParams, "F", vmNativeFlags, null, null, null));
-        methods.add(new ImmutableMethod(stubClass, "callDouble", vmCommonParams, "D", vmNativeFlags, null, null, null));
-        methods.add(new ImmutableMethod(stubClass, "callObject", vmCommonParams, "Ljava/lang/Object;", vmNativeFlags, null, null, null));
-
-        ImmutableClassDef stubClassDef = new ImmutableClassDef(
-                stubClass,
-                AccessFlags.PUBLIC.getValue(),
-                applicationClass,
-                Collections.<String>emptyList(),
-                "StubApp.java",
-                Collections.emptySet(),
-                Collections.emptyList(),
-                methods
-        );
-
-        dexPool.internClass(stubClassDef);
-        dexPool.writeTo(new FileDataStore(outputDex));
-
-        return outputDex;
-    }
     private String getPackageNameFromClassName(String className) {
         if (className == null) {
             return "";
@@ -1111,76 +1049,59 @@ public class MainActivity extends ComponentActivity {
 
                 appendLogOnUi("开始执行 VMP 抽取");
 
-                List<String> activityOnCreateList = readActivityOnCreateMethods(copiedApk);
+                // 从设置中读取方法规则（格式：com.example.Class.method）
+                String methodRulesText = getMethodRulesFromSettings();
+                String[] methodRules = methodRulesText.split("\n");
 
-                if (activityOnCreateList.isEmpty()) {
-                    appendLogOnUi("未读取到 Activity，使用默认 onCreate 抽取规则");
-                    activityOnCreateList.add("*.*.onCreate");
-                } else {
-                    appendLogOnUi("读取到 Activity 数量：" + activityOnCreateList.size());
-                    /*for (String methodName : activityOnCreateList) {
-                        appendLogOnUi("Activity onCreate：" + methodName);
-                    }*/
+                // 过滤空行和注释
+                List<String> validRules = new ArrayList<>();
+                for (String rule : methodRules) {
+                    rule = rule.trim();
+                    if (rule.isEmpty() || rule.startsWith("#")) {
+                        continue;
+                    }
+                    validRules.add(rule);
+                }
+
+                if (validRules.isEmpty()) {
+                    appendLogOnUi("错误：方法规则为空，请在设置中配置要保护的方法");
+                    appendLogOnUi("格式示例：com.example.MainActivity.onCreate");
+                    btnSelectApk.setEnabled(true);
+                    return;
+                }
+
+                appendLogOnUi("方法规则数量：" + validRules.size());
+                for (String rule : validRules) {
+                    appendLogOnUi("  规则：" + rule);
                 }
 
                 extractMethodsToBin(
                         workDir,
                         this::appendLogOnUi,
-                        activityOnCreateList.toArray(new String[0])
+                        validRules.toArray(new String[0])
                 );
 
                 appendLogOnUi("VMP 抽取完成");
 
-                appendLogOnUi("开始重写 VMP dex");
+                appendLogOnUi("开始重写 dex（嵌入式方案）");
 
-                String stubClassName = getValidStubClassNameFromSettings();
+                String vmpClassName = getValidVmpClassNameFromSettings();
 
                 rewriteExtractedMethodsToVmCallDex(
                         workDir,
                         this::appendLogOnUi,
                         getValidSoNameFromSettings(),
-                        stubClassName
+                        vmpClassName
                 );
 
                 appendLogOnUi("VMP dex 重写完成");
 
-                if (settings.Debug) {
-                    File vmpDexDebugDir = new File(workDir, DEBUG_VMP_DEX_DIR);
-                    copyDexFilesToDir(workDir, vmpDexDebugDir);
-                    appendLogOnUi("调试模式：已备份 VMP dex 到：" + vmpDexDebugDir.getAbsolutePath());
-                }
-
-                File shellDexDir = new File(workDir, "shell");
-                if (!shellDexDir.exists() && !shellDexDir.mkdirs()) {
-                    throw new RuntimeException("创建壳dex目录失败：" + shellDexDir.getAbsolutePath());
-                }
-
-                File shellDex = generateShellDex(shellDexDir);
-
-                byte[] signHash64 = getSignHash64ForShell();
-
-                buildEncryptedShellDex(workDir, shellDex, appName, signHash64);
-
-                File finalShellDex = new File(workDir, "classes.dex");
-
-                try (FileInputStream in = new FileInputStream(shellDex);
-                     FileOutputStream out = new FileOutputStream(finalShellDex, false)) {
-
-                    byte[] buffer = new byte[8192];
-                    int len;
-
-                    while ((len = in.read(buffer)) != -1) {
-                        out.write(buffer, 0, len);
-                    }
-
-                    out.flush();
-                }
-
-                appendLogOnUi("加密完成：" + finalShellDex.getAbsolutePath());
-
                 extractStubSoByTargetAbi(copiedApk, workDir);
 
-                File newManifest = modifyAndroidManifest(copiedApk, workDir);
+                appendLogOnUi("SO 已注入到 lib 目录");
+
+                // 第二代嵌入式方案：不修改 AndroidManifest，不劫持 Application
+                // 原始应用的入口类保持不变
 
                 File protectedApk = rebuildProtectedApk(copiedApk, workDir, originalApkName);
 
@@ -1261,68 +1182,8 @@ public class MainActivity extends ComponentActivity {
         }).start();
     }
 
-    private List<String> readActivityOnCreateMethods(File apkFile) {
-        List<String> result = new ArrayList<>();
-
-        try {
-            PackageManager pm = getPackageManager();
-
-            PackageInfo packageInfo;
-
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                packageInfo = pm.getPackageArchiveInfo(
-                        apkFile.getAbsolutePath(),
-                        PackageManager.PackageInfoFlags.of(PackageManager.GET_ACTIVITIES)
-                );
-            } else {
-                packageInfo = pm.getPackageArchiveInfo(
-                        apkFile.getAbsolutePath(),
-                        PackageManager.GET_ACTIVITIES
-                );
-            }
-
-            if (packageInfo == null) {
-                appendLogOnUi("读取 APK 包信息失败");
-                return result;
-            }
-
-            ApplicationInfo appInfo = packageInfo.applicationInfo;
-            if (appInfo != null) {
-                appInfo.sourceDir = apkFile.getAbsolutePath();
-                appInfo.publicSourceDir = apkFile.getAbsolutePath();
-            }
-
-            ActivityInfo[] activities = packageInfo.activities;
-            if (activities == null || activities.length == 0) {
-                appendLogOnUi("目标 APK 中未发现 Activity");
-                return result;
-            }
-
-            for (ActivityInfo activityInfo : activities) {
-                if (activityInfo == null || activityInfo.name == null) {
-                    continue;
-                }
-
-                String className = activityInfo.name;
-
-                if (className.startsWith(".")) {
-                    className = packageInfo.packageName + className;
-                }
-                // 排除内部类、匿名类，例如：com.demo.MainActivity$1
-                if (className.contains("$")) {
-                    //appendLogOnUi("跳过内部类 Activity：" + className);
-                    continue;
-                }
-
-                result.add(className + ".onCreate");
-            }
-
-        } catch (Exception e) {
-            appendLogOnUi("读取 Activity 失败：" + e.getMessage());
-        }
-
-        return result;
-    }
+    // readActivityOnCreateMethods 已移除
+    // 第二代嵌入式方案：不再自动扫描 Activity，改为在设置中配置方法规则
 
     private void copyDexFilesToDir(File sourceDir, File targetDir) throws IOException {
         if (sourceDir == null || !sourceDir.isDirectory()) {

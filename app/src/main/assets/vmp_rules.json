@@ -1,0 +1,36 @@
+{
+  "vmpClassName": "com.ark.safe.VMP",
+  "soName": "ArkStub",
+  "rules": [
+    {
+      "comment": "保护 MainActivity 的 onCreate 方法",
+      "class": "com.example.app.MainActivity",
+      "method": "onCreate",
+      "returnType": "V"
+    },
+    {
+      "comment": "保护登录 Activity 的 onResume 方法",
+      "class": "com.example.app.LoginActivity",
+      "method": "onResume",
+      "returnType": "V"
+    },
+    {
+      "comment": "保护 PaymentActivity 下所有方法（通配符）",
+      "class": "com.example.app.PaymentActivity",
+      "method": "*",
+      "returnType": null
+    },
+    {
+      "comment": "保护加密工具类的 decrypt 方法",
+      "class": "com.example.crypto.CryptoUtils",
+      "method": "decrypt",
+      "returnType": "Ljava/lang/String;"
+    },
+    {
+      "comment": "保护签名验证方法",
+      "class": "com.example.security.SignVerifier",
+      "method": "verify",
+      "returnType": "Z"
+    }
+  ]
+}

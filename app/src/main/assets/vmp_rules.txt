@@ -1,0 +1,40 @@
+# VMP 方法保护规则配置
+# 每行一条规则，# 开头为注释
+#
+# 格式：包名.类名.方法名
+#       或：包名.类名.*（通配符保护该类的所有方法）
+#
+# 示例：
+# ----------
+#
+# 保护单个类的单个方法：
+# com.example.app.MainActivity.onCreate
+#
+# 保护单个类的所有方法（谨慎使用，可能导致方法过多）：
+# com.example.app.PaymentActivity.*
+#
+# 保护加密相关方法：
+# com.example.crypto.CryptoUtils.decrypt
+# com.example.crypto.CryptoUtils.encrypt
+#
+# 保护签名验证：
+# com.example.security.SignVerifier.verify
+#
+# 保护网络请求：
+# com.example.network.ApiClient.request
+# com.example.network.ApiClient.signRequest
+#
+# ----------
+# 规则匹配逻辑：
+#   1. 完全匹配：com.example.A.b 精确匹配类 A 的方法 b
+#   2. 包名通配符：*.example.A.b 匹配任意包下的 example.A.b
+#   3. 类名通配符：com.example.*.b 匹配 com.example 下任意类的 b 方法
+#   4. 方法通配符：com.example.A.* 匹配 A 下的所有方法
+#
+# 注意事项：
+#   - <init>（构造方法）和 <clinit>（静态初始化）不会被抽取
+#   - native、abstract、bridge、synthetic、synchronized 方法不会被抽取
+#   - 包含 invoke-polymorphic/invoke-custom 的方法不会被抽取
+#   - 被抽取的方法会替换为 VMP.callXxx(methodId, this, args) 调用
+#
+com.example.app.MainActivity.onCreate

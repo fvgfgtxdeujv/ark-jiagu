@@ -19,7 +19,17 @@ import com.android.tools.smali.dexlib2.iface.instruction.Instruction;
 import com.android.tools.smali.dexlib2.DexFileFactory;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import com.android.tools.smali.dexlib2.immutable.ImmutableClassDef;
+import com.android.tools.smali.dexlib2.immutable.ImmutableDexFile;
+import com.android.tools.smali.dexlib2.immutable.ImmutableMethod;
+import com.android.tools.smali.dexlib2.immutable.ImmutableMethodImplementation;
+import com.android.tools.smali.dexlib2.immutable.ImmutableMethodParameter;
+import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction21c;
+import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction35c;
+import com.android.tools.smali.dexlib2.immutable.reference.ImmutableMethodReference;
+import com.android.tools.smali.dexlib2.immutable.reference.ImmutableStringReference;
 public class VmpJiaguEntry {
 
 
@@ -218,32 +228,45 @@ public class VmpJiaguEntry {
 
     /**
      * :TODO
-     * 重组dex
+     * 重组dex - 第二代嵌入式方案
+     * 不再生成独立的壳 dex，而是：
+     * 1. 将 VMP 类直接注入原始 dex 的第一个 dex 文件
+     * 2. 被保护的方法体替换为 VMP.callXxx() 调用
+     * 3. 不修改 AndroidManifest，不劫持 Application
      * */
     public static void rewriteExtractedMethodsToVmCallDex(File dexDir,
                                                           LogCallback logCallback,
                                                           String soName,
-                                                          String vmCallClassName) throws IOException {
+                                                          String vmpClassName) throws IOException {
         if (dexDir == null || !dexDir.isDirectory()) {
             throw new IOException("dex目录不存在");
         }
 
         if (EXTRACTED_METHOD_MAP.isEmpty()) {
-            vmpLog(logCallback, "VMP未抽取到任何方法，跳过dex重写，继续执行后续dex加密");
+            vmpLog(logCallback, "VMP未抽取到任何方法，跳过dex重写");
             return;
         }
 
-        if (vmCallClassName == null || vmCallClassName.trim().isEmpty()) {
-            throw new IOException("VM调用类名为空");
+        if (vmpClassName == null || vmpClassName.trim().isEmpty()) {
+            throw new IOException("VMP类名为空");
         }
 
-        String vmpClassType = "L" + vmCallClassName.trim().replace('.', '/') + ";";
+        String cleanSoName = soName != null ? soName.trim() : VmpUtils2.DEFAULT_SO_NAME;
+        String cleanVmpClassName = vmpClassName.trim();
 
-        int outDexIndex = 1;
-        int inDexIndex = 1;
+        vmpLog(logCallback, "第二代嵌入式方案：VMP类=" + cleanVmpClassName
+                + " SO=" + cleanSoName);
+
+        // 第一步：生成 VMP 类（带 <clinit> 自动加载 SO）
+        com.android.tools.smali.dexlib2.iface.ClassDef vmpClass =
+                com.ark.jiagu.vm.VmpUtils2.createVmpClassEmbedded(cleanSoName, cleanVmpClassName);
+
+        // 第二步：重写每个 dex，注入 VMP 类（只注入一次到第一个 dex），替换方法体
+        int dexIndex = 1;
+        boolean vmpInjected = false;
 
         while (true) {
-            String dexName = inDexIndex == 1 ? "classes.dex" : "classes" + inDexIndex + ".dex";
+            String dexName = dexIndex == 1 ? "classes.dex" : "classes" + dexIndex + ".dex";
             File dexFile = new File(dexDir, dexName);
 
             if (!dexFile.isFile()) {
@@ -253,54 +276,73 @@ public class VmpJiaguEntry {
 
             if (!isValidDexFile(dexFile)) {
                 System.out.println("跳过非法dex文件：" + dexFile.getAbsolutePath());
-                break;
+                dexIndex++;
+                continue;
             }
 
             DexBackedDexFile dex;
             try {
                 dex = DexFileFactory.loadDexFile(dexFile, Opcodes.getDefault());
             } catch (Throwable e) {
-                System.out.println("解析dex失败，停止重写：" + dexFile.getName());
-                System.out.println("失败原因：" + e.getMessage());
-                vmpLog(logCallback, "解析dex失败，停止重写：" + dexFile.getName());
-                vmpLog(logCallback, "失败原因：" + e.getMessage());
+                System.out.println("解析dex失败，停止重写：" + dexFile.getName() + " " + e.getMessage());
+                vmpLog(logCallback, "解析dex失败：" + dexFile.getName());
                 break;
             }
 
-            System.out.println("开始重写dex：" + dexFile.getName());
-            vmpLog(logCallback, "开始重写dex：" + dexFile.getName());
+            List<com.android.tools.smali.dexlib2.iface.ClassDef> allClasses = new ArrayList<>();
 
-            List<ClassDef> currentClasses = new ArrayList<>();
-            int currentMethodCount = 0;
+            // 第一个 dex 注入 VMP 类
+            if (!vmpInjected) {
+                allClasses.add(vmpClass);
+                vmpInjected = true;
+                vmpLog(logCallback, "VMP 类已注入到：" + dexName);
+            }
 
             for (ClassDef classDef : dex.getClasses()) {
-                ClassDef newClass = rewriteClassForVmCall(dexName, classDef, vmpClassType);
-                currentClasses.add(newClass);
-                currentMethodCount += countClassMethods(newClass);
+                ClassDef newClass = rewriteClassForVmCall(dexName, classDef,
+                        "L" + cleanVmpClassName.replace('.', '/') + ";");
+                allClasses.add(newClass);
             }
 
-            if (!currentClasses.isEmpty()) {
-                writeCombinedDex(dexDir, outDexIndex, currentClasses);
-                System.out.println("当前dex重写完成：" + dexFile.getName()
-                        + " methodCount=" + currentMethodCount
-                        + " outDexIndex=" + outDexIndex);
-                outDexIndex++;
+            // 写出新的 dex
+            File outDex = new File(dexDir, dexName + ".tmp");
+            DexFile outDexFile = new ImmutableDexFile(
+                    Opcodes.getDefault(),
+                    allClasses
+            );
+
+            try {
+                DexFileFactory.writeDexFile(outDex.getAbsolutePath(), outDexFile);
+            } catch (Exception e) {
+                throw new IOException("写出dex失败：" + dexName + " " + e.getMessage(), e);
             }
 
-            currentClasses.clear();
+            // 替换原始 dex
+            if (!dexFile.delete()) {
+                throw new IOException("删除原始dex失败：" + dexFile.getAbsolutePath());
+            }
+            if (!outDex.renameTo(dexFile)) {
+                throw new IOException("替换dex失败：" + outDex.getAbsolutePath());
+            }
+
+            int methodCount = 0;
+            for (ClassDef cd : allClasses) {
+                methodCount += countClassMethods(cd);
+            }
+
+            vmpLog(logCallback, "重写完成：" + dexName
+                    + " classCount=" + allClasses.size()
+                    + " methodCount=" + methodCount);
+
+            allClasses.clear();
             dex = null;
-
             System.gc();
 
-            inDexIndex++;
+            dexIndex++;
         }
 
-        replaceOriginalDexWithCombinedDex(dexDir);
-
-        vmpLog(logCallback, "VM调用壳重写完成，VM调用类=" + vmpClassType
-                + "，输出dex数量=" + (outDexIndex - 1));
-        System.out.println("VM调用壳重写完成，VM调用类=" + vmpClassType
-                + "，输出dex数量=" + (outDexIndex - 1));
+        vmpLog(logCallback, "第二代嵌入式 VMP 重写完成，VMP类=" + cleanVmpClassName);
+        System.out.println("第二代嵌入式 VMP 重写完成");
     }
 
     /**

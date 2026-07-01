@@ -44,50 +44,12 @@ static std::string jstringToString(JNIEnv *env, jstring str) {
     return result;
 }
 
-static void dotToSlash(std::string &name) {
-    for (size_t i = 0; i < name.length(); i++) {
-        if (name[i] == '.') {
-            name[i] = '/';
-        }
-    }
-}
-
-static std::string getStubClassNameFromProperty(JNIEnv *env) {
-    jclass clsSystem = env->FindClass("java/lang/System");
-    if (clsSystem == nullptr) {
-        env->ExceptionClear();
-        return "";
-    }
-
-    jmethodID midGetProperty = env->GetStaticMethodID(
-            clsSystem,
-            "getProperty",
-            "(Ljava/lang/String;)Ljava/lang/String;"
-    );
-
-    if (midGetProperty == nullptr) {
-        env->ExceptionClear();
-        return "";
-    }
-
-    jstring key = env->NewStringUTF("ark");
-
-    jstring value = (jstring) env->CallStaticObjectMethod(
-            clsSystem,
-            midGetProperty,
-            key
-    );
-
-    if (env->ExceptionCheck()) {
-        env->ExceptionClear();
-        return "";
-    }
-
-    std::string className = jstringToString(env, value);
-    dotToSlash(className);
-
-    return className;
-}
+// ==================== 第二代嵌入式方案 ====================
+// VMP 类名固定为 com/ark/safe/VMP
+// 不再通过 System.getProperty("ark") 查找壳类名
+// VMP 类通过 <clinit> 中的 System.loadLibrary 自动触发 SO 加载
+// ==========================================================
+static const char *VMP_CLASS_NAME = "com/ark/safe/VMP";
 
 static void native_callVoid(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args) {
     //LOGI("callVoid methodId=%d", methodId);
@@ -161,29 +123,26 @@ extern "C" jint ArkVMP_OnLoad(JavaVM *vm) {
         return JNI_ERR;
     }
 
-    std::string className = getStubClassNameFromProperty(env);
-    if (className.empty()) {
-        className = "com/ark/safe/StubApp";
-    }
-
-    jclass stubClass = env->FindClass(className.c_str());
-    if (stubClass == nullptr) {
+    // 第二代嵌入式方案：直接 FindClass VMP 类
+    // VMP 类通过 <clinit> 中的 System.loadLibrary 触发本 SO 加载
+    jclass vmpClass = env->FindClass(VMP_CLASS_NAME);
+    if (vmpClass == nullptr) {
         env->ExceptionClear();
-        //LOGE("找不到VM调用入口类：%s", className.c_str());
+        //LOGE("找不到VMP类：%s", VMP_CLASS_NAME);
         return JNI_ERR;
     }
 
-    //LOGI("ArkVMP 开始注册call方法到目标类：%s", className.c_str());
+    //LOGI("ArkVMP 开始注册call方法到VMP类：%s", VMP_CLASS_NAME);
 
     int methodCount = sizeof(g_methods) / sizeof(g_methods[0]);
 
-    if (env->RegisterNatives(stubClass, g_methods, methodCount) != JNI_OK) {
+    if (env->RegisterNatives(vmpClass, g_methods, methodCount) != JNI_OK) {
         env->ExceptionClear();
-        //LOGE("ArkVMP RegisterNatives失败，目标类：%s", className.c_str());
+        //LOGE("ArkVMP RegisterNatives失败，VMP类：%s", VMP_CLASS_NAME);
         return JNI_ERR;
     }
 
-    //LOGI("ArkVMP注册成功，目标类：%s", className.c_str());
+    //LOGI("ArkVMP注册成功，VMP类：%s", VMP_CLASS_NAME);
 
     return JNI_VERSION_1_6;
 }
