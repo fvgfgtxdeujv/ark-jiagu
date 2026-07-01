@@ -221,11 +221,81 @@ extern "C" jint ArkVMP_OnLoad(JavaVM *vm) {
         return JNI_ERR;
     }
 
-    if (ArkAntiDebug_CheckAll(env)) {
-        LOGE("反调试检测失败，SO 拒绝加载");
-        return JNI_ERR;
+    // ==================== 开发版本跳过反调试 ====================
+    // 检查 ApplicationInfo.FLAG_DEBUGGABLE
+    // 如果应用是 debug 构建（FLAG_DEBUGGABLE=1），跳过所有反调试检测
+    // 方便开发阶段调试，生产环境自动启用反调试
+    bool isDebuggable = false;
+
+    jclass activityThreadClass = env->FindClass("android/app/ActivityThread");
+    if (activityThreadClass != nullptr) {
+        jmethodID currentApplicationMethod = env->GetStaticMethodID(
+                activityThreadClass, "currentApplication", "()Landroid/app/Application;");
+        if (currentApplicationMethod != nullptr) {
+            jobject application = env->CallStaticObjectMethod(
+                    activityThreadClass, currentApplicationMethod);
+            if (application != nullptr && !env->ExceptionCheck()) {
+                jclass contextClass = env->GetObjectClass(application);
+                jmethodID getPackageManagerMethod = env->GetMethodID(
+                        contextClass, "getPackageManager", "()Landroid/content/pm/PackageManager;");
+                jmethodID getPackageNameMethod = env->GetMethodID(
+                        contextClass, "getPackageName", "()Ljava/lang/String;");
+
+                if (getPackageManagerMethod != nullptr && getPackageNameMethod != nullptr) {
+                    jobject packageManager = env->CallObjectMethod(
+                            application, getPackageManagerMethod);
+                    jstring packageName = (jstring) env->CallObjectMethod(
+                            application, getPackageNameMethod);
+
+                    if (packageManager != nullptr && packageName != nullptr
+                            && !env->ExceptionCheck()) {
+                        jclass pmClass = env->GetObjectClass(packageManager);
+                        jmethodID getApplicationInfoMethod = env->GetMethodID(
+                                pmClass, "getApplicationInfo",
+                                "(Ljava/lang/String;I)Landroid/content/pm/ApplicationInfo;");
+
+                        if (getApplicationInfoMethod != nullptr) {
+                            jobject appInfo = env->CallObjectMethod(
+                                    packageManager, getApplicationInfoMethod,
+                                    packageName, 0);
+                            if (appInfo != nullptr && !env->ExceptionCheck()) {
+                                jclass appInfoClass = env->GetObjectClass(appInfo);
+                                jfieldID flagsField = env->GetFieldID(
+                                        appInfoClass, "flags", "I");
+                                if (flagsField != nullptr) {
+                                    jint flags = env->GetIntField(appInfo, flagsField);
+                                    // FLAG_DEBUGGABLE = 0x00000002
+                                    isDebuggable = (flags & 0x00000002) != 0;
+                                }
+                                env->DeleteLocalRef(appInfo);
+                            }
+                        }
+                        env->DeleteLocalRef(pmClass);
+                        env->DeleteLocalRef(packageManager);
+                    }
+                    env->DeleteLocalRef(packageName);
+                }
+                env->DeleteLocalRef(contextClass);
+                env->DeleteLocalRef(application);
+            }
+        }
+        env->DeleteLocalRef(activityThreadClass);
+    }
+
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+
+    if (isDebuggable) {
+        LOGI("检测到调试版本（FLAG_DEBUGGABLE），跳过反调试检测");
+    } else {
+        if (ArkAntiDebug_CheckAll(env)) {
+            LOGE("反调试检测失败，SO 拒绝加载");
+            return JNI_ERR;
+        }
     }
     // ====================================================
+
 
     // 第二代嵌入式方案：直接 FindClass VMP 类
     // VMP 类通过 <clinit> 中的 System.loadLibrary 触发本 SO 加载
