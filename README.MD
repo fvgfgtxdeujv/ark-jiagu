@@ -21,7 +21,7 @@
   ├─ 解压 dex + manifest
   │
   ├─ 按规则抽取指定方法的 dalvik 指令
-  │   └─ 输出 vmp.bin（指令映射表 + 方法索引表 + 加密的方法数据）
+  │   └─ 输出 vmp.bin（多层加密 + 乱序方法块 + 变长编码 + HMAC 校验）
   │
   ├─ 重写原始 dex：
   │   ├─ 注入 VMP 类（com.ark.safe.VMP）
@@ -31,9 +31,84 @@
   │   │
   │   └─ 被保护方法替换为 VMP.callXxx(methodId, this, args)
   │
-  ├─ 注入 lib/ 目录（ArkStub SO）
+  ├─ 注入 lib// 目录（ArkStub SO）
   │
   └─ 重新打包 APK（原始 manifest，原始 Application）
+```
+
+## vmp.bin 文件格式
+
+vmp.bin 是第二代嵌入式 VMP 的核心数据文件，包含所有被保护方法的指令信息。
+
+### 文件结构（version=5）
+
+```
+┌─────────────────────────────────────────┐
+│  Magic: 'A' 'V' 'M' 'P' (4 bytes)      │
+├─────────────────────────────────────────┤
+│  Version: 5 (4 bytes, LE int)           │
+├─────────────────────────────────────────┤
+│  #1 多层加密：16字节 opcode 密钥         │
+├─────────────────────────────────────────┤
+│  Opcode 映射表（XOR 混淆）               │
+│  count → [vmOpcode, realOpcode, name]×N │
+├─────────────────────────────────────────┤
+│  方法索引表（#16 加密跳转表）             │
+│  count → [methodId, offset, size, cs]×N │
+│  offset/size 经过旋转+XOR 混淆            │
+├─────────────────────────────────────────┤
+│  方法块数据（#3 乱序存储）                │
+│  每个块包含：                             │
+│  ┌─ #13 冗余填充（前 4~32 字节垃圾）     │
+│  ├─ #12 交错元数据：methodId/dexName/   │
+│  │  className（头部）                    │
+│  ├─ 指令数据段：#11变长编码 + #18自解密  │
+│  │  + #19指令重叠 + #2分块XOR密钥       │
+│  ├─ #12 交错元数据：methodName/sig/     │
+│  │  flags/params（尾部）                 │
+│  ├─ try-catch 块                        │
+│  ├─ #6 哈希链（32字节 SHA256）           │
+│  └─ #13 冗余填充（后 4~32 字节垃圾）     │
+├─────────────────────────────────────────┤
+│  #5 HMAC-SHA256（32字节尾部校验）        │
+└─────────────────────────────────────────┘
+
+#15 指令分片：长指令序列拆为 2~4 个碎片，
+  碎片偏移表记录在方法块内，碎片散布在
+  bin 文件末尾，碎片间有随机垃圾分隔。
+```
+
+### 解密流程
+
+```
+AVMX 加密文件
+  │
+  ├─ 第一层：XOR 解密（32字节密钥）
+  │
+  ├─ 第二层：#1 多层轮混淆（8轮 XOR+加法+旋转）
+  │
+  └─ 输出 AVMP 明文（可直接解析）
+```
+
+### 方法块读取流程
+
+```
+索引表查询 methodId
+  │
+  ├─ #16 逆旋转变换还原 offset/size
+  ├─ #7 校验和验证
+  │
+  └─ 定位到方法块起始
+      │
+      ├─ #13 跳过前冗余填充
+      ├─ #12 读取头部元数据
+      ├─ #11 变长解码指令数据
+      │   ├─ #18 块密钥 XOR 解密
+      │   ├─ #19 指令重叠还原
+      │   └─ #2 分块密钥派生
+      ├─ #12 读取尾部元数据
+      ├─ #6 哈希链校验
+      └─ #13 跳过后冗余填充
 ```
 
 ## 方法规则配置
@@ -77,11 +152,18 @@ com.example.security.SignVerifier.verify
 
 | 文件 | 说明 |
 |------|------|
-| `ArkVMP.cpp` | **修改**：去掉 `getStubClassNameFromProperty`，直接注册到 `com/ark/safe/VMP` |
-| `VmpRuntime.cpp` | VM 运行时：解析 vmp.bin → 指令分发 |
-| `VmpInterpreter.cpp` | 指令执行引擎 |
-| `VmHandlers.cpp` | 各 dalvik 指令的 C++ 实现 |
-| `VmpParser.cpp` | vmp.bin 解析器 |
+| `ArkVMP.cpp` | SO 自校验 + JNI_OnLoad 注册 |
+| `VmpRuntime.cpp` | VM 运行时：解析 vmp.bin → 指令分发 + SO/DEX 交叉校验 |
+| `VmpInterpreter.cpp` | 指令执行引擎（控制流扁平化 dispatch） |
+| `VmHandlers.cpp` | 各 dalvik 指令的 C++ 实现（含数据即代码/代码虚拟化） |
+| `VmHandlers.h` | handler 函数声明 |
+| `VmpParser.cpp` | vmp.bin 多层解密 + 变长解码 + 哈希链 + HMAC 校验 |
+| `VmpTypes.h` | 数据结构定义（含 regPerm 寄存器混淆） |
+| `VmContext.h/cpp` | VM 执行上下文（dispatch state + 寄存器映射） |
+| `VmOpcodeDef.h` | Dalvik opcode 常量定义 |
+| `VmOpcodeHandler.cpp` | opcode → handler 分发表 |
+| `ArkAntiDebug.cpp` | 反调试检测（ptrace/Frida/Tracer/时间差） |
+| `ArkAntiDebug.h` | 反调试接口声明 |
 
 ## SO 加载流程
 
@@ -120,9 +202,25 @@ java -cp "smali.jar:VmpRunner.jar" com.ark.jiagu.vm.VmpRunner \
 本源码属于半成品，仅用作学习交流。
 - VMP 指令已实现全部 256 条 dalvik 指令（含 INVOKE_CUSTOM_RANGE、CONST_METHOD_HANDLE、CONST_METHOD_TYPE）
 - 加固后大概率会有问题，需要根据日志修复 VmHandlers.cpp
-- 未做任何加密保护，vmp.bin 中存放明文指令
+- vmp.bin 已实现多层加密保护：乱序存储 + 多层轮混淆 + HMAC 校验 + 索引自校验 + 哈希链
 
-## 已实现的加固特性（魔改清单）
+## vmp.bin 加密特性清单
+
+| # | 特性 | 作用 | 文件 |
+|---|------|------|------|
+| 1 | 多层嵌套加密 | 双层密钥（XOR + 8轮轮混淆 + 字节置换） | VmpUtils.java / VmpParser.cpp |
+| 2 | 分块独立加密 | 每方法块独立 XOR 密钥，密钥由 methodId 派生 | VmpUtils.java / VmpParser.cpp |
+| 3 | 乱序存储 | Fisher-Yates 洗牌，方法块伪随机排列 | VmpUtils.java / VmpParser.cpp |
+| 5 | HMAC-SHA256 | 全局完整性校验，密钥绑定 opcode 映射表 | VmpUtils.java / VmpParser.cpp |
+| 6 | 哈希链 | 方法块间链式 SHA256 绑定，改一破全 | VmpUtils.java / VmpParser.cpp |
+| 7 | 索引自校验 | 索引表 offset/size 旋转+XOR 混淆 + 校验和 | VmpUtils.java / VmpParser.cpp |
+| 11 | 变长编码 | int/long 用 1~9 字节编码，小型值更紧凑 | VmpUtils.java / VmpParser.cpp |
+| 12 | 字段交错存储 | 元数据（头部）→ 指令 → 元数据（尾部），破坏顺序 | VmpUtils.java / VmpParser.cpp |
+| 13 | 冗余填充 | 方法块前后 4~32 字节随机垃圾，掩盖真实边界 | VmpUtils.java / VmpParser.cpp |
+| 15 | 指令分片 | 长指令拆为 2~4 碎片，散布 bin 末尾 + 垃圾分隔 | VmpUtils.java / VmpParser.cpp |
+| 16 | 加密跳转表 | 索引表 offset/size 旋转混淆，静态分析无法直接读取 | VmpUtils.java / VmpParser.cpp |
+
+## 运行时加固特性清单
 
 | # | 特性 | 实现位置 | git commit |
 |---|------|---------|------------|
