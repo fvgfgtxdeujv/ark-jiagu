@@ -118,7 +118,7 @@ java -cp "smali.jar:VmpRunner.jar" com.ark.jiagu.vm.VmpRunner \
 ## 声明
 
 本源码属于半成品，仅用作学习交流。
-- VMP 指令实现了 250/256 条，剩余 6 条未实现
+- VMP 指令已实现全部 256 条 dalvik 指令（含 INVOKE_CUSTOM_RANGE、CONST_METHOD_HANDLE、CONST_METHOD_TYPE）
 - 加固后大概率会有问题，需要根据日志修复 VmHandlers.cpp
 - 未做任何加密保护，vmp.bin 中存放明文指令
 

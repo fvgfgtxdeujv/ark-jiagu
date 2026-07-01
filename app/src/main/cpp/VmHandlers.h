@@ -248,6 +248,7 @@ bool VmHandleUnusedF9(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleInvokePolymorphic(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleInvokePolymorphicRange(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleInvokeCustom(VmContext &ctx, const VmpInstruction &insn);
+bool VmHandleInvokeCustomRange(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleFloatToInt(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleInvokeDirectRange(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleInvokeVirtualRange(VmContext &ctx, const VmpInstruction &insn);
@@ -257,5 +258,7 @@ bool VmHandleXorInt(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleXorInt2Addr(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleInvokeCommon(VmContext &ctx, const VmpInstruction &insn);
 bool VmHandleInvokeDirect(VmContext &ctx, const VmpInstruction &insn);
+bool VmHandleConstMethodHandle(VmContext &ctx, const VmpInstruction &insn);
+bool VmHandleConstMethodType(VmContext &ctx, const VmpInstruction &insn);
 
 #endif

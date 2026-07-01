@@ -9370,7 +9370,331 @@ bool VmHandleInvokeCustom(VmContext &ctx, const VmpInstruction &insn) {
     return true;
 }
 
+//指令 INVOKE_CUSTOM_RANGE (0xFD)
+//与 INVOKE_CUSTOM 类似，但参数使用 register range 格式
+bool VmHandleInvokeCustomRange(VmContext &ctx, const VmpInstruction &insn) {
+    if (insn.referenceData.empty()) {
+        LOGE("INVOKE_CUSTOM_RANGE 缺少CallSite引用");
+        return false;
+    }
 
+    if (insn.registers.size() < 2) {
+        LOGE("INVOKE_CUSTOM_RANGE 寄存器数量不足，需要 startReg + count");
+        return false;
+    }
+
+    int startReg = insn.registers[0];
+    int argCount = insn.registers[1];
+
+    if (argCount < 0 || startReg + argCount > VM_MAX_REGISTERS) {
+        LOGE("INVOKE_CUSTOM_RANGE 参数范围超出寄存器边界 start=%d count=%d",
+             startReg, argCount);
+        return false;
+    }
+
+    jclass objectClass = ctx.env->FindClass("java/lang/Object");
+    if (ctx.env->ExceptionCheck() || objectClass == nullptr) {
+        ctx.env->ExceptionClear();
+        LOGE("INVOKE_CUSTOM_RANGE 找不到Object类");
+        return false;
+    }
+
+    jobjectArray argArray = ctx.env->NewObjectArray(argCount, objectClass, nullptr);
+    if (ctx.env->ExceptionCheck() || argArray == nullptr) {
+        ctx.env->ExceptionClear();
+        LOGE("INVOKE_CUSTOM_RANGE 创建参数数组失败");
+        return false;
+    }
+
+    for (int i = 0; i < argCount; i++) {
+        int reg = startReg + i;
+        jobject value = ctx.regs[reg].objectValue;
+
+        ctx.env->SetObjectArrayElement(argArray, i, value);
+
+        if (ctx.env->ExceptionCheck()) {
+            ctx.env->ExceptionClear();
+            LOGE("INVOKE_CUSTOM_RANGE 设置参数失败 index=%d reg=v%d", i, reg);
+            return false;
+        }
+    }
+
+    jclass helperClass = ctx.env->FindClass("com/ark/jiagu/vm/VmpInvokeCustomHelper");
+    if (ctx.env->ExceptionCheck() || helperClass == nullptr) {
+        ctx.env->ExceptionClear();
+        LOGE("INVOKE_CUSTOM_RANGE 找不到辅助类 VmpInvokeCustomHelper");
+        return false;
+    }
+
+    jmethodID mid = ctx.env->GetStaticMethodID(
+            helperClass,
+            "invokeCustom",
+            "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/Object;"
+    );
+
+    if (ctx.env->ExceptionCheck() || mid == nullptr) {
+        ctx.env->ExceptionClear();
+        LOGE("INVOKE_CUSTOM_RANGE 找不到辅助方法 invokeCustom");
+        return false;
+    }
+
+    jstring callSiteText = ctx.env->NewStringUTF(insn.referenceData.c_str());
+    if (ctx.env->ExceptionCheck() || callSiteText == nullptr) {
+        ctx.env->ExceptionClear();
+        LOGE("INVOKE_CUSTOM_RANGE 创建CallSite字符串失败");
+        return false;
+    }
+
+    jobject result = ctx.env->CallStaticObjectMethod(
+            helperClass,
+            mid,
+            callSiteText,
+            argArray
+    );
+
+    if (ctx.env->ExceptionCheck()) {
+        ctx.env->ExceptionClear();
+        LOGE("INVOKE_CUSTOM_RANGE 调用失败 callSite=%s", insn.referenceData.c_str());
+        return false;
+    }
+
+    ctx.lastResultObject = result;
+
+    ctx.pc++;
+    return true;
+}
+
+//指令 CONST_METHOD_HANDLE (0xFE)
+//将 MethodHandle 常量加载到寄存器
+//referenceData 格式：handleType|refType|owner->name:signature
+bool VmHandleConstMethodHandle(VmContext &ctx, const VmpInstruction &insn) {
+    if (insn.registers.size() < 1) {
+        LOGE("CONST_METHOD_HANDLE 寄存器数量不足");
+        return false;
+    }
+
+    if (insn.referenceData.empty()) {
+        LOGE("CONST_METHOD_HANDLE 引用数据为空");
+        return false;
+    }
+
+    // 解析 handleType|refType|methodRef
+    int pipe1 = insn.referenceData.find('|');
+    if (pipe1 < 0) {
+        LOGE("CONST_METHOD_HANDLE 引用格式错误：%s", insn.referenceData.c_str());
+        return false;
+    }
+
+    int handleType = std::stoi(insn.referenceData.substr(0, pipe1));
+    std::string rest = insn.referenceData.substr(pipe1 + 1);
+
+    int pipe2 = rest.find('|');
+    if (pipe2 < 0) {
+        LOGE("CONST_METHOD_HANDLE 引用格式错误：%s", insn.referenceData.c_str());
+        return false;
+    }
+
+    int refType = std::stoi(rest.substr(0, pipe2));
+    std::string methodRef = rest.substr(pipe2 + 1);
+
+    // 解析方法引用：owner->name:signature
+    size_t arrow = methodRef.find("->");
+    if (arrow == std::string::npos) {
+        LOGE("CONST_METHOD_HANDLE 方法引用格式错误：%s", methodRef.c_str());
+        return false;
+    }
+
+    std::string owner = methodRef.substr(0, arrow);
+    std::string right = methodRef.substr(arrow + 2);
+    size_t colon = right.find(':');
+    if (colon == std::string::npos) {
+        LOGE("CONST_METHOD_HANDLE 方法签名格式错误：%s", right.c_str());
+        return false;
+    }
+
+    std::string methodName = right.substr(0, colon);
+    std::string methodSignature = right.substr(colon + 1);
+
+    // 将 dex 类型名转为 Java 类名
+    std::string javaOwner = owner;
+    if (javaOwner.size() > 2 && javaOwner[0] == 'L' && javaOwner.back() == ';') {
+        javaOwner = javaOwner.substr(1, javaOwner.size() - 2);
+    }
+    for (size_t i = 0; i < javaOwner.size(); i++) {
+        if (javaOwner[i] == '/') javaOwner[i] = '.';
+    }
+
+    jclass cls = ctx.env->FindClass(javaOwner.c_str());
+    if (ctx.env->ExceptionCheck() || cls == nullptr) {
+        ctx.env->ExceptionClear();
+        LOGE("CONST_METHOD_HANDLE 找不到类：%s", javaOwner.c_str());
+        return false;
+    }
+
+    // 根据 handleType 选择不同的 MethodHandle 获取方式
+    jobject methodHandle = nullptr;
+
+    if (refType == 4) {
+        // 方法引用
+        std::vector<std::string> paramTypes = parseMethodParameterTypes(methodSignature);
+        std::string returnType = parseMethodReturnType(methodSignature);
+
+        if (handleType == 1) { // REF_getField
+            jfieldID fid = ctx.env->GetFieldID(cls, methodName.c_str(),
+                returnType.empty() ? "Ljava/lang/Object;" : returnType.c_str());
+            if (ctx.env->ExceptionCheck() || fid == nullptr) {
+                ctx.env->ExceptionClear();
+                LOGE("CONST_METHOD_HANDLE 找不到字段：%s->%s", javaOwner.c_str(), methodName.c_str());
+                return false;
+            }
+            jclass methodHandleClass = ctx.env->FindClass("java/lang/invoke/MethodHandle");
+            jmethodID ctor = ctx.env->GetMethodID(methodHandleClass, "<init>", "(J)V");
+            methodHandle = ctx.env->NewObject(methodHandleClass, ctor, reinterpret_cast<jlong>(fid));
+        }
+        else if (handleType == 2) { // REF_getStatic
+            jfieldID fid = ctx.env->GetStaticFieldID(cls, methodName.c_str(),
+                returnType.empty() ? "Ljava/lang/Object;" : returnType.c_str());
+            if (ctx.env->ExceptionCheck() || fid == nullptr) {
+                ctx.env->ExceptionClear();
+                LOGE("CONST_METHOD_HANDLE 找不到静态字段：%s->%s", javaOwner.c_str(), methodName.c_str());
+                return false;
+            }
+            jclass methodHandleClass = ctx.env->FindClass("java/lang/invoke/MethodHandle");
+            jmethodID ctor = ctx.env->GetMethodID(methodHandleClass, "<init>", "(J)V");
+            methodHandle = ctx.env->NewObject(methodHandleClass, ctor, reinterpret_cast<jlong>(fid));
+        }
+        else if (handleType == 3) { // REF_putField
+            jfieldID fid = ctx.env->GetFieldID(cls, methodName.c_str(),
+                returnType.empty() ? "Ljava/lang/Object;" : returnType.c_str());
+            if (ctx.env->ExceptionCheck() || fid == nullptr) {
+                ctx.env->ExceptionClear();
+                LOGE("CONST_METHOD_HANDLE 找不到字段：%s->%s", javaOwner.c_str(), methodName.c_str());
+                return false;
+            }
+            jclass methodHandleClass = ctx.env->FindClass("java/lang/invoke/MethodHandle");
+            jmethodID ctor = ctx.env->GetMethodID(methodHandleClass, "<init>", "(J)V");
+            methodHandle = ctx.env->NewObject(methodHandleClass, ctor, reinterpret_cast<jlong>(fid));
+        }
+        else if (handleType == 4) { // REF_putStatic
+            jfieldID fid = ctx.env->GetStaticFieldID(cls, methodName.c_str(),
+                returnType.empty() ? "Ljava/lang/Object;" : returnType.c_str());
+            if (ctx.env->ExceptionCheck() || fid == nullptr) {
+                ctx.env->ExceptionClear();
+                LOGE("CONST_METHOD_HANDLE 找不到静态字段：%s->%s", javaOwner.c_str(), methodName.c_str());
+                return false;
+            }
+            jclass methodHandleClass = ctx.env->FindClass("java/lang/invoke/MethodHandle");
+            jmethodID ctor = ctx.env->GetMethodID(methodHandleClass, "<init>", "(J)V");
+            methodHandle = ctx.env->NewObject(methodHandleClass, ctor, reinterpret_cast<jlong>(fid));
+        }
+        else {
+            // handleType 5/6/7/8 是方法引用，用 Method 模拟
+            bool isStatic = (handleType == 5 || handleType == 6);
+            jmethodID mid;
+            if (isStatic) {
+                mid = ctx.env->GetStaticMethodID(cls, methodName.c_str(), methodSignature.c_str());
+            } else {
+                mid = ctx.env->GetMethodID(cls, methodName.c_str(), methodSignature.c_str());
+            }
+
+            if (ctx.env->ExceptionCheck() || mid == nullptr) {
+                ctx.env->ExceptionClear();
+                LOGE("CONST_METHOD_HANDLE 找不到方法：%s->%s%s", javaOwner.c_str(), methodName.c_str(), methodSignature.c_str());
+                return false;
+            }
+
+            // 用 Method 对象包装作为 MethodHandle 的替代
+            methodHandle = ctx.env->ToReflectedMethod(cls, mid, isStatic);
+        }
+    } else {
+        LOGE("CONST_METHOD_HANDLE 不支持的引用类型：%d", refType);
+        return false;
+    }
+
+    if (ctx.env->ExceptionCheck() || methodHandle == nullptr) {
+        ctx.env->ExceptionClear();
+        LOGE("CONST_METHOD_HANDLE 创建失败 handleType=%d ref=%s", handleType, insn.referenceData.c_str());
+        return false;
+    }
+
+    int dst = insn.registers[0];
+    ctx.regs[dst].objectValue = methodHandle;
+    ctx.regs[dst].kind = VM_REG_OBJECT;
+
+    ctx.pc++;
+    return true;
+}
+
+//指令 CONST_METHOD_TYPE (0xFF)
+//将 MethodType 常量加载到寄存器
+//referenceData 格式：方法原型签名，如 (II)Ljava/lang/String;
+bool VmHandleConstMethodType(VmContext &ctx, const VmpInstruction &insn) {
+    if (insn.registers.size() < 1) {
+        LOGE("CONST_METHOD_TYPE 寄存器数量不足");
+        return false;
+    }
+
+    if (insn.referenceData.empty()) {
+        LOGE("CONST_METHOD_TYPE 引用数据为空");
+        return false;
+    }
+
+    // 调用 java.lang.invoke.MethodType.methodType(String) 创建 MethodType
+    jclass methodTypeClass = ctx.env->FindClass("java/lang/invoke/MethodType");
+    if (ctx.env->ExceptionCheck() || methodTypeClass == nullptr) {
+        ctx.env->ExceptionClear();
+        LOGE("CONST_METHOD_TYPE 找不到 MethodType 类");
+        return false;
+    }
+
+    jmethodID fromMethodType = ctx.env->GetStaticMethodID(
+            methodTypeClass,
+            "methodType",
+            "(Ljava/lang/String;)Ljava/lang/invoke/MethodType;"
+    );
+    if (ctx.env->ExceptionCheck() || fromMethodType == nullptr) {
+        ctx.env->ExceptionClear();
+        // 尝试从描述符解析的另一种方式
+        jmethodID ctor = ctx.env->GetMethodID(methodTypeClass, "<init>", "(Ljava/lang/String;)V");
+        if (ctx.env->ExceptionCheck() || ctor == nullptr) {
+            ctx.env->ExceptionClear();
+            LOGE("CONST_METHOD_TYPE 找不到 MethodType 构造方法");
+            return false;
+        }
+
+        jstring typeDesc = ctx.env->NewStringUTF(insn.referenceData.c_str());
+        jobject methodType = ctx.env->AllocObject(methodTypeClass);
+        ctx.env->CallVoidMethod(methodType, ctor, typeDesc);
+
+        if (ctx.env->ExceptionCheck()) {
+            ctx.env->ExceptionClear();
+            LOGE("CONST_METHOD_TYPE 创建失败：%s", insn.referenceData.c_str());
+            return false;
+        }
+
+        int dst = insn.registers[0];
+        ctx.regs[dst].objectValue = methodType;
+        ctx.regs[dst].kind = VM_REG_OBJECT;
+        ctx.pc++;
+        return true;
+    }
+
+    jstring typeDesc = ctx.env->NewStringUTF(insn.referenceData.c_str());
+    jobject methodType = ctx.env->CallStaticObjectMethod(methodTypeClass, fromMethodType, typeDesc);
+
+    if (ctx.env->ExceptionCheck() || methodType == nullptr) {
+        ctx.env->ExceptionClear();
+        LOGE("CONST_METHOD_TYPE 创建失败：%s", insn.referenceData.c_str());
+        return false;
+    }
+
+    int dst = insn.registers[0];
+    ctx.regs[dst].objectValue = methodType;
+    ctx.regs[dst].kind = VM_REG_OBJECT;
+
+    ctx.pc++;
+    return true;
+}
 
 //==================================================================================
 //==================================================================================

@@ -281,16 +281,6 @@ public class VmpUtils {
         for (Instruction instruction : impl.getInstructions()) {
             Opcode opcode = instruction.getOpcode();
 
-            if (opcode == Opcode.INVOKE_POLYMORPHIC
-                    || opcode == Opcode.INVOKE_POLYMORPHIC_RANGE
-                    || opcode == Opcode.INVOKE_CUSTOM
-                    || opcode == Opcode.INVOKE_CUSTOM_RANGE
-                    || opcode == Opcode.CONST_METHOD_HANDLE
-                    || opcode == Opcode.CONST_METHOD_TYPE) {
-
-                System.out.println("跳过抽取：方法包含暂不支持的动态调用相关指令 opcode=" + opcode.name());
-                return true;
-            }
         }
 
         return false;

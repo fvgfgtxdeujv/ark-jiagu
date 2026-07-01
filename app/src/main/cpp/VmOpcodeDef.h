@@ -258,7 +258,7 @@
 #define OP_INVOKE_POLYMORPHIC             0xfa //实现麻烦，不抽含有这个指令的方法
 #define OP_INVOKE_POLYMORPHIC_RANGE       0xfb //实现麻烦，不抽含有这个指令的方法
 #define OP_INVOKE_CUSTOM                  0xfc //实现麻烦，不抽含有这个指令的方法
-#define OP_INVOKE_CUSTOM_RANGE            0xfd //实现麻烦，不抽含有这个指令的方法
-#define OP_CONST_METHOD_HANDLE            0xfe //实现麻烦，不抽含有这个指令的方法
-#define OP_CONST_METHOD_TYPE              0xff //实现麻烦，不抽含有这个指令的方法
+#define OP_INVOKE_CUSTOM_RANGE            0xfd //已实现 VmHandleInvokeCustomRange
+#define OP_CONST_METHOD_HANDLE            0xfe //已实现 VmHandleConstMethodHandle
+#define OP_CONST_METHOD_TYPE              0xff //已实现 VmHandleConstMethodType
 #endif // ARK_VMP_OPCODE_DEF_H

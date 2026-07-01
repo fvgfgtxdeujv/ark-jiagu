@@ -261,6 +261,9 @@ static void initRealOpcodeHandlerTable() {
     g_realOpcodeHandlerTable[OP_INVOKE_POLYMORPHIC] = VmHandleInvokePolymorphic;
     g_realOpcodeHandlerTable[OP_INVOKE_POLYMORPHIC_RANGE] = VmHandleInvokePolymorphicRange;
     g_realOpcodeHandlerTable[OP_INVOKE_CUSTOM] = VmHandleInvokeCustom;
+    g_realOpcodeHandlerTable[OP_INVOKE_CUSTOM_RANGE] = VmHandleInvokeCustomRange;
+    g_realOpcodeHandlerTable[OP_CONST_METHOD_HANDLE] = VmHandleConstMethodHandle;
+    g_realOpcodeHandlerTable[OP_CONST_METHOD_TYPE] = VmHandleConstMethodType;
 
     g_realOpcodeHandlerTable[OP_INVOKE_DIRECT_RANGE] = VmHandleInvokeDirectRange;
     g_realOpcodeHandlerTable[OP_INVOKE_STATIC] = VmHandleInvokeStatic;
