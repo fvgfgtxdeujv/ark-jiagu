@@ -147,155 +147,77 @@ extern "C" void ArkVMP_SetContext(JNIEnv *env, jobject context) {
 // ==========================================================
 static const char *VMP_CLASS_NAME = "com/ark/safe/VMP";
 
-static void native_callVoid(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args) {
+static void native_callVoid(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args, jboolean isDebuggable) {
     //LOGI("callVoid methodId=%d", methodId);
-    VmpRuntime_Execute(env, methodId, thiz, args);
+    VmpRuntime_Execute(env, methodId, thiz, args, isDebuggable);
 }
 
-static jboolean native_callBoolean(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args) {
+static jboolean native_callBoolean(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args, jboolean isDebuggable) {
     //LOGI("callBoolean methodId=%d", methodId);
-    return VmpRuntime_Execute(env, methodId, thiz, args).booleanValue;
+    return VmpRuntime_Execute(env, methodId, thiz, args, isDebuggable).booleanValue;
 }
 
-static jbyte native_callByte(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args) {
+static jbyte native_callByte(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args, jboolean isDebuggable) {
     //LOGI("callByte methodId=%d", methodId);
-    return VmpRuntime_Execute(env, methodId, thiz, args).byteValue;
+    return VmpRuntime_Execute(env, methodId, thiz, args, isDebuggable).byteValue;
 }
 
-static jshort native_callShort(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args) {
+static jshort native_callShort(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args, jboolean isDebuggable) {
     //LOGI("callShort methodId=%d", methodId);
-    return VmpRuntime_Execute(env, methodId, thiz, args).shortValue;
+    return VmpRuntime_Execute(env, methodId, thiz, args, isDebuggable).shortValue;
 }
 
-static jchar native_callChar(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args) {
+static jchar native_callChar(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args, jboolean isDebuggable) {
     //LOGI("callChar methodId=%d", methodId);
-    return VmpRuntime_Execute(env, methodId, thiz, args).charValue;
+    return VmpRuntime_Execute(env, methodId, thiz, args, isDebuggable).charValue;
 }
 
-static jint native_callInt(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args) {
+static jint native_callInt(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args, jboolean isDebuggable) {
     //LOGI("callInt methodId=%d", methodId);
-    return VmpRuntime_Execute(env, methodId, thiz, args).intValue;
+    return VmpRuntime_Execute(env, methodId, thiz, args, isDebuggable).intValue;
 }
 
-static jlong native_callLong(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args) {
+static jlong native_callLong(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args, jboolean isDebuggable) {
     //LOGI("callLong methodId=%d", methodId);
-    return VmpRuntime_Execute(env, methodId, thiz, args).longValue;
+    return VmpRuntime_Execute(env, methodId, thiz, args, isDebuggable).longValue;
 }
 
-static jfloat native_callFloat(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args) {
+static jfloat native_callFloat(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args, jboolean isDebuggable) {
     //LOGI("callFloat methodId=%d", methodId);
-    return VmpRuntime_Execute(env, methodId, thiz, args).floatValue;
+    return VmpRuntime_Execute(env, methodId, thiz, args, isDebuggable).floatValue;
 }
 
-static jdouble native_callDouble(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args) {
+static jdouble native_callDouble(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args, jboolean isDebuggable) {
     //LOGI("callDouble methodId=%d", methodId);
-    return VmpRuntime_Execute(env, methodId, thiz, args).doubleValue;
+    return VmpRuntime_Execute(env, methodId, thiz, args, isDebuggable).doubleValue;
 }
 
-static jobject native_callObject(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args) {
+static jobject native_callObject(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args, jboolean isDebuggable) {
     //LOGI("callObject methodId=%d", methodId);
-    return VmpRuntime_Execute(env, methodId, thiz, args).objectValue;
+    return VmpRuntime_Execute(env, methodId, thiz, args, isDebuggable).objectValue;
 }
 
 static JNINativeMethod g_methods[] = {
-        {"callVoid", "(ILjava/lang/Object;[Ljava/lang/Object;)V", (void *) native_callVoid},
-        {"callBoolean", "(ILjava/lang/Object;[Ljava/lang/Object;)Z", (void *) native_callBoolean},
-        {"callByte", "(ILjava/lang/Object;[Ljava/lang/Object;)B", (void *) native_callByte},
-        {"callShort", "(ILjava/lang/Object;[Ljava/lang/Object;)S", (void *) native_callShort},
-        {"callChar", "(ILjava/lang/Object;[Ljava/lang/Object;)C", (void *) native_callChar},
-        {"callInt", "(ILjava/lang/Object;[Ljava/lang/Object;)I", (void *) native_callInt},
-        {"callLong", "(ILjava/lang/Object;[Ljava/lang/Object;)J", (void *) native_callLong},
-        {"callFloat", "(ILjava/lang/Object;[Ljava/lang/Object;)F", (void *) native_callFloat},
-        {"callDouble", "(ILjava/lang/Object;[Ljava/lang/Object;)D", (void *) native_callDouble},
-        {"callObject", "(ILjava/lang/Object;[Ljava/lang/Object;)Ljava/lang/Object;", (void *) native_callObject}
+        {"callVoid", "(ILjava/lang/Object;[Ljava/lang/Object;Z)V", (void *) native_callVoid},
+        {"callBoolean", "(ILjava/lang/Object;[Ljava/lang/Object;Z)Z", (void *) native_callBoolean},
+        {"callByte", "(ILjava/lang/Object;[Ljava/lang/Object;Z)B", (void *) native_callByte},
+        {"callShort", "(ILjava/lang/Object;[Ljava/lang/Object;Z)S", (void *) native_callShort},
+        {"callChar", "(ILjava/lang/Object;[Ljava/lang/Object;Z)C", (void *) native_callChar},
+        {"callInt", "(ILjava/lang/Object;[Ljava/lang/Object;Z)I", (void *) native_callInt},
+        {"callLong", "(ILjava/lang/Object;[Ljava/lang/Object;Z)J", (void *) native_callLong},
+        {"callFloat", "(ILjava/lang/Object;[Ljava/lang/Object;Z)F", (void *) native_callFloat},
+        {"callDouble", "(ILjava/lang/Object;[Ljava/lang/Object;Z)D", (void *) native_callDouble},
+        {"callObject", "(ILjava/lang/Object;[Ljava/lang/Object;Z)Ljava/lang/Object;", (void *) native_callObject}
 };
 
 extern "C" jint ArkVMP_OnLoad(JavaVM *vm) {
     g_vm = vm;
     (void) ArkVmpKeepCustomSection();//引用自定义字符串信息防止被编译器优化
 
-    // ==================== 反调试检测 ====================
-    // 在 JNI_OnLoad 的最开始执行，如果检测到调试环境直接拒绝加载
     JNIEnv *env = nullptr;
     if (vm->GetEnv((void **) &env, JNI_VERSION_1_6) != JNI_OK) {
         return JNI_ERR;
     }
-
-    // ==================== 开发版本跳过反调试 ====================
-    // 检查 ApplicationInfo.FLAG_DEBUGGABLE
-    // 如果应用是 debug 构建（FLAG_DEBUGGABLE=1），跳过所有反调试检测
-    // 方便开发阶段调试，生产环境自动启用反调试
-    bool isDebuggable = false;
-
-    jclass activityThreadClass = env->FindClass("android/app/ActivityThread");
-    if (activityThreadClass != nullptr) {
-        jmethodID currentApplicationMethod = env->GetStaticMethodID(
-                activityThreadClass, "currentApplication", "()Landroid/app/Application;");
-        if (currentApplicationMethod != nullptr) {
-            jobject application = env->CallStaticObjectMethod(
-                    activityThreadClass, currentApplicationMethod);
-            if (application != nullptr && !env->ExceptionCheck()) {
-                jclass contextClass = env->GetObjectClass(application);
-                jmethodID getPackageManagerMethod = env->GetMethodID(
-                        contextClass, "getPackageManager", "()Landroid/content/pm/PackageManager;");
-                jmethodID getPackageNameMethod = env->GetMethodID(
-                        contextClass, "getPackageName", "()Ljava/lang/String;");
-
-                if (getPackageManagerMethod != nullptr && getPackageNameMethod != nullptr) {
-                    jobject packageManager = env->CallObjectMethod(
-                            application, getPackageManagerMethod);
-                    jstring packageName = (jstring) env->CallObjectMethod(
-                            application, getPackageNameMethod);
-
-                    if (packageManager != nullptr && packageName != nullptr
-                            && !env->ExceptionCheck()) {
-                        jclass pmClass = env->GetObjectClass(packageManager);
-                        jmethodID getApplicationInfoMethod = env->GetMethodID(
-                                pmClass, "getApplicationInfo",
-                                "(Ljava/lang/String;I)Landroid/content/pm/ApplicationInfo;");
-
-                        if (getApplicationInfoMethod != nullptr) {
-                            jobject appInfo = env->CallObjectMethod(
-                                    packageManager, getApplicationInfoMethod,
-                                    packageName, 0);
-                            if (appInfo != nullptr && !env->ExceptionCheck()) {
-                                jclass appInfoClass = env->GetObjectClass(appInfo);
-                                jfieldID flagsField = env->GetFieldID(
-                                        appInfoClass, "flags", "I");
-                                if (flagsField != nullptr) {
-                                    jint flags = env->GetIntField(appInfo, flagsField);
-                                    // FLAG_DEBUGGABLE = 0x00000002
-                                    isDebuggable = (flags & 0x00000002) != 0;
-                                }
-                                env->DeleteLocalRef(appInfo);
-                            }
-                        }
-                        env->DeleteLocalRef(pmClass);
-                        env->DeleteLocalRef(packageManager);
-                    }
-                    env->DeleteLocalRef(packageName);
-                }
-                env->DeleteLocalRef(contextClass);
-                env->DeleteLocalRef(application);
-            }
-        }
-        env->DeleteLocalRef(activityThreadClass);
-    }
-
-    if (env->ExceptionCheck()) {
-        env->ExceptionClear();
-    }
-
-    if (isDebuggable) {
-        LOGI("检测到调试版本（FLAG_DEBUGGABLE），跳过反调试检测");
-    } else {
-        if (ArkAntiDebug_CheckAll(env)) {
-            LOGE("反调试检测失败，SO 拒绝加载");
-            return JNI_ERR;
-        }
-    }
-    // ====================================================
-
 
     // 第二代嵌入式方案：直接 FindClass VMP 类
     // VMP 类通过 <clinit> 中的 System.loadLibrary 触发本 SO 加载

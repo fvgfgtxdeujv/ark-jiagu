@@ -2421,17 +2421,39 @@ public class VmpUtils {
         String callMethodName = getCallMethodNameByReturnType(returnType);
         String callReturnType = getCallReturnType(returnType);
 
+        // ==================== 调试模式检测：Java 端获取 FLAG_DEBUGGABLE ====================
+        // 调用 VMP.isDebuggable()，结果存到 regIndex (v3)
+        // isDebuggable() 内部通过 ActivityThread 获取 Application 并检查 FLAG_DEBUGGABLE
+        instructions.add(new ImmutableInstruction35c(
+                Opcode.INVOKE_STATIC,
+                3,
+                0,
+                0,
+                0,
+                0,
+                0,
+                new ImmutableMethodReference(
+                        vmpClassType,
+                        "isDebuggable",
+                        Collections.emptyList(),
+                        "Z"
+                )
+        ));
+        instructions.add(new ImmutableInstruction11x(Opcode.MOVE_RESULT, 3));
+        // ====================================================
+
         instructions.add(new ImmutableInstruction3rc(
                 Opcode.INVOKE_STATIC_RANGE,
                 regMethodId,
-                3,
+                4, // 4 个参数：methodId, this, args, isDebuggable
                 new ImmutableMethodReference(
                         vmpClassType,
                         callMethodName,
                         Arrays.asList(
                                 "I",
                                 "Ljava/lang/Object;",
-                                "[Ljava/lang/Object;"
+                                "[Ljava/lang/Object;",
+                                "Z"  // isDebuggable
                         ),
                         callReturnType
                 )

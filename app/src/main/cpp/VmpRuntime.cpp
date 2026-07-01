@@ -57,7 +57,8 @@ VmResult VmpRuntime_Execute(
         JNIEnv *env,
         jint methodId,
         jobject thiz,
-        jobjectArray args
+        jobjectArray args,
+        jboolean isDebuggable
 ) {
     VmResult result;
 
@@ -82,42 +83,49 @@ VmResult VmpRuntime_Execute(
         return result;
     }
 
-    // ==================== SO 自校验（魔改#9） ====================
-    // 每执行 100 次方法调用校验一次 SO 完整性
-    // 避免每次调用都校验影响性能
-    static int execCounter = 0;
-    if (++execCounter >= 100) {
-        execCounter = 0;
-        if (!checkSelfIntegrity()) {
-            LOGE("SO完整性校验失败，终止VMP执行");
-            return result;
+    // ==================== 调试模式跳过反调试检测 ====================
+    // isDebuggable=true 表示应用处于调试模式（FLAG_DEBUGGABLE），
+    // 开发版本跳过所有反调试检测，方便调试
+    if (!isDebuggable) {
+        // ==================== SO 自校验（魔改#9） ====================
+        // 每执行 100 次方法调用校验一次 SO 完整性
+        // 避免每次调用都校验影响性能
+        static int execCounter = 0;
+        if (++execCounter >= 100) {
+            execCounter = 0;
+            if (!checkSelfIntegrity()) {
+                LOGE("SO完整性校验失败，终止VMP执行");
+                return result;
+            }
         }
-    }
-    // ====================================================
+        // ====================================================
 
-    // ==================== DEX 完整性校验（魔改#10） ====================
-    // 每执行 500 次校验一次 DEX
-    static int dexCheckCounter = 0;
-    if (++dexCheckCounter >= 500) {
-        dexCheckCounter = 0;
-        if (!checkDexIntegrity(env)) {
-            LOGE("DEX完整性校验失败，终止VMP执行");
-            return result;
+        // ==================== DEX 完整性校验（魔改#10） ====================
+        // 每执行 500 次校验一次 DEX
+        static int dexCheckCounter = 0;
+        if (++dexCheckCounter >= 500) {
+            dexCheckCounter = 0;
+            if (!checkDexIntegrity(env)) {
+                LOGE("DEX完整性校验失败，终止VMP执行");
+                return result;
+            }
         }
-    }
-    // ====================================================
+        // ====================================================
 
-    // ==================== 多级交叉校验（魔改#11） ====================
-    // SO 和 DEX 互相绑定，任何一方被篡改都会检测到
-    static int crossCheckCounter = 0;
-    if (++crossCheckCounter >= 1000) {
-        crossCheckCounter = 0;
-        if (!checkCrossBinding(env)) {
-            LOGE("交叉校验失败，SO/DEX绑定关系被破坏");
-            return result;
+        // ==================== 多级交叉校验（魔改#11） ====================
+        // SO 和 DEX 互相绑定，任何一方被篡改都会检测到
+        static int crossCheckCounter = 0;
+        if (++crossCheckCounter >= 1000) {
+            crossCheckCounter = 0;
+            if (!checkCrossBinding(env)) {
+                LOGE("交叉校验失败，SO/DEX绑定关系被破坏");
+                return result;
+            }
         }
+        // ====================================================
+    } else {
+        LOGI("调试模式，跳过反调试检测");
     }
-    // ====================================================
 
     jsize argCount = 0;
     if (args != nullptr) {

@@ -12,7 +12,8 @@ VmResult VmpRuntime_Execute(
         JNIEnv *env,
         jint methodId,
         jobject thiz,
-        jobjectArray args
+        jobjectArray args,
+        jboolean isDebuggable  // 调试模式标记，true 时跳过反调试
 );
 
 #endif

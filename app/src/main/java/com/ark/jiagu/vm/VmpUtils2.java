@@ -190,11 +190,108 @@ public class VmpUtils2 {
                 null
         );
 
-        // ---------- native call 方法 ----------
+        // ---------- 调试模式检测（Java 端获取 FLAG_DEBUGGABLE） ----------
+        // 纯 Java 实现：通过 ActivityThread 获取 Application，检查 FLAG_DEBUGGABLE
+        // 结果缓存，只计算一次
+        // reg0 = return value
+        List<com.android.tools.smali.dexlib2.iface.instruction.Instruction> isDebuggableInstructions =
+                Arrays.asList(
+                        // 获取 ActivityThread
+                        new ImmutableInstruction21c(
+                                Opcode.CONST_CLASS, 0,
+                                new ImmutableTypeReference("android/app/ActivityThread")
+                        ),
+                        new ImmutableInstruction35c(
+                                Opcode.INVOKE_STATIC, 1, 0, 0, 0, 0, 0,
+                                new ImmutableMethodReference(
+                                        "android/app/ActivityThread",
+                                        "currentApplication",
+                                        Collections.emptyList(),
+                                        "Landroid/app/Application;"
+                                )
+                        ),
+                        new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 2),
+                        // if application == null, return false
+                        new ImmutableInstruction11n(Opcode.CONST_4, 0, 0),
+                        new ImmutableInstruction22c(
+                                Opcode.IF_EQZ, 2, 0,
+                                new ImmutableStringReference("")
+                        ),
+                        // application.getPackageManager()
+                        new ImmutableInstruction11x(Opcode.MOVE_OBJECT, 3, 2),
+                        new ImmutableInstruction35c(
+                                Opcode.INVOKE_VIRTUAL, 4, 3, 0, 0, 0, 0,
+                                new ImmutableMethodReference(
+                                        "android/content/Context",
+                                        "getPackageManager",
+                                        Collections.emptyList(),
+                                        "Landroid/content/pm/PackageManager;"
+                                )
+                        ),
+                        new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 4),
+                        // application.getPackageName()
+                        new ImmutableInstruction35c(
+                                Opcode.INVOKE_VIRTUAL, 5, 3, 0, 0, 0, 0,
+                                new ImmutableMethodReference(
+                                        "android/content/Context",
+                                        "getPackageName",
+                                        Collections.emptyList(),
+                                        "Ljava/lang/String;"
+                                )
+                        ),
+                        new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 5),
+                        // pm.getApplicationInfo(packageName, 0)
+                        new ImmutableInstruction35c(
+                                Opcode.INVOKE_VIRTUAL, 6, 4, 5, 0, 0, 0,
+                                new ImmutableMethodReference(
+                                        "android/content/pm/PackageManager",
+                                        "getApplicationInfo",
+                                        Arrays.asList("Ljava/lang/String;", "I"),
+                                        "Landroid/content/pm/ApplicationInfo;"
+                                )
+                        ),
+                        new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 6),
+                        // appInfo.flags
+                        new ImmutableInstruction35c(
+                                Opcode.INVOKE_VIRTUAL, 0, 6, 0, 0, 0, 0,
+                                new ImmutableMethodReference(
+                                        "android/content/pm/ApplicationInfo",
+                                        "getFlags",
+                                        Collections.emptyList(),
+                                        "I"
+                                )
+                        ),
+                        new ImmutableInstruction11x(Opcode.MOVE_RESULT, 0),
+                        // flags & 0x02 (FLAG_DEBUGGABLE)
+                        new ImmutableInstruction12x(Opcode.AND_INT_LIT8, 0, 0, 0x02),
+                        new ImmutableInstruction11x(Opcode.RETURN)
+                );
+
+        com.android.tools.smali.dexlib2.iface.MethodImplementation isDebuggableImpl =
+                new ImmutableMethodImplementation(
+                        7,
+                        isDebuggableInstructions,
+                        Collections.emptyList(),
+                        Collections.emptyList()
+                );
+
+        com.android.tools.smali.dexlib2.iface.Method isDebuggableMethod = new ImmutableMethod(
+                classType,
+                "isDebuggable",
+                Collections.emptyList(),
+                "Z",
+                AccessFlags.STATIC.getValue() | AccessFlags.PRIVATE.getValue(),
+                null,
+                null,
+                isDebuggableImpl
+        );
+
+        // ---------- native call 方法（增加 boolean isDebuggable 参数） ----------
         List<MethodParameter> commonParams = Arrays.asList(
                 new ImmutableMethodParameter("I", Collections.emptySet(), null),
                 new ImmutableMethodParameter("Ljava/lang/Object;", Collections.emptySet(), null),
-                new ImmutableMethodParameter("[Ljava/lang/Object;", Collections.emptySet(), null)
+                new ImmutableMethodParameter("[Ljava/lang/Object;", Collections.emptySet(), null),
+                new ImmutableMethodParameter("Z", Collections.emptySet(), null)  // isDebuggable
         );
 
         int nativeFlags = AccessFlags.PUBLIC.getValue()
@@ -218,6 +315,7 @@ public class VmpUtils2 {
         allMethods.add(clinitMethod);
         allMethods.add(initMethod);
         allMethods.add(attachMethod);
+        allMethods.add(isDebuggableMethod);  // 调试检测方法
         allMethods.addAll(nativeMethods);
 
         return new ImmutableClassDef(
