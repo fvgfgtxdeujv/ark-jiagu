@@ -122,6 +122,32 @@ java -cp "smali.jar:VmpRunner.jar" com.ark.jiagu.vm.VmpRunner \
 - 加固后大概率会有问题，需要根据日志修复 VmHandlers.cpp
 - 未做任何加密保护，vmp.bin 中存放明文指令
 
+## 已实现的加固特性（魔改清单）
+
+| # | 特性 | 实现位置 | git commit |
+|---|------|---------|------------|
+| 1 | JNI_OnLoad ptrace 自关联检测 | ArkAntiDebug.cpp | 魔改#1-4 |
+| 2 | Frida 检测（maps + fd） | ArkAntiDebug.cpp | 魔改#1-4 |
+| 3 | Tracer 检测（TracerPid + getppid） | ArkAntiDebug.cpp | 魔改#1-4 |
+| 4 | 时间差检测（单步跟踪检测） | ArkAntiDebug.cpp | 魔改#1-4 |
+| 5 | Opcode 随机化（每次加固不同映射表） | VmpUtils.java / VmpParser.cpp | 魔改#5 |
+| 6 | 假指令插入（NOP 混淆） | VmpJiaguEntry.java | 魔改#6 |
+| 7 | 寄存器别名（随机偏移寄存器索引） | VmpUtils.java / VmpTypes.h | 魔改#7 |
+| 8 | 常量池加密（字面量 XOR 混淆） | VmpUtils.java / VmpParser.cpp | 魔改#8 |
+| 9 | SO 自校验（CRC32 定期检测） | ArkVMP.cpp / VmpRuntime.cpp | 魔改#9 |
+| 10 | DEX 完整性校验（SHA256） | ArkAntiDebug.cpp | 魔改#10 |
+| 11 | 多级交叉校验（SO↔DEX 绑定） | ArkAntiDebug.cpp | 魔改#11 |
+| 12 | 签名链（方法块 SHA256 防篡改） | VmpUtils.java / VmpParser.cpp | 魔改#12 |
+| 13 | 控制流扁平化（dispatch state 替代 pc++） | VmpInterpreter.cpp | 魔改#13 |
+| 14 | 不透明谓词（IF_NEZ/IF_EQZ 永远分支） | VmpJiaguEntry.java | 魔改#14 |
+| 15 | 代码虚拟化（嵌套迷你 VM 执行加密字节码） | VmHandlers.cpp | 魔改#15 |
+| 16 | 栈混淆（运行时动态寄存器映射 regPerm） | VmContext.h / VmContext.cpp | 魔改#16 |
+| 18 | 自解密（每方法块独立 XOR 密钥） | VmpUtils.java / VmpParser.cpp | 魔改#18 |
+| 19 | 指令重叠（相邻指令共享字面量） | VmpUtils.java / VmpParser.cpp | 魔改#19 |
+| 20 | 垃圾指令增强（5种类型：MOVE/AND/OR/XOR/ADD） | VmpJiaguEntry.java | 魔改#20 |
+| 21 | 跳转混淆（try-catch 代替直接跳转） | VmpJiaguEntry.java | 魔改#21 |
+| 22 | 数据即代码（VMOP_EXEC_DATA 迷你解释器） | VmHandlers.cpp | 魔改#22 |
+
 ## 原始代码
 
 原始代码（被 VMP 保护前）：
