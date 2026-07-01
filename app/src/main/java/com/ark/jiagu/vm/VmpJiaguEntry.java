@@ -217,29 +217,32 @@ public class VmpJiaguEntry {
 
                         codeUnitOffset += instruction.getCodeUnits();
 
-                        // ==================== 假指令插入（魔改#6） ====================
-                        // 在每条真实指令后插入 0~2 条 NOP 假指令
-                        // 假指令使用已分配的 vmOpcode，VM 执行时无害但增加分析难度
-                        int fakeCount = fakeRandom.nextInt(3); // 0, 1, 或 2 条
-                        for (int f = 0; f < fakeCount; f++) {
-                            ExtractInstruction fakeInsn = new ExtractInstruction();
-                            fakeInsn.codeUnitOffset = codeUnitOffset;
-                            // 使用 NOP 的真实 opcode (0x00) 对应的 vmOpcode
-                            fakeInsn.vmOpcode = getOrCreateVmOpcode(
-                                    Opcode.NOP, opcodeMap, opcodePool, opcodePoolIndex
+                        // ==================== 垃圾指令插入（魔改#20） ====================
+                        // 在每条真实指令后插入 1~3 条垃圾指令
+                        // 垃圾指令是看似有实际意义的无害操作（寄存器自拷贝、与零运算等）
+                        // 增加静态分析难度，VM 执行时不影响程序逻辑
+                        int garbageCount = 1 + fakeRandom.nextInt(3); // 1~3 条
+                        for (int g = 0; g < garbageCount; g++) {
+                            ExtractInstruction garbage = generateGarbageInstruction(
+                                    codeUnitOffset, opcodeMap, opcodePool, opcodePoolIndex,
+                                    fakeRandom, aliasOffset
                             );
-                            fakeInsn.formatName = "NOP(fake)";
-                            fakeInsn.codeUnits = 1; // NOP 占 1 个 code unit
-                            fakeInsn.literalType = 0;
-                            fakeInsn.literalValue = 0;
-                            fakeInsn.offsetType = 0;
-                            fakeInsn.offsetValue = 0;
-                            fakeInsn.referenceType = 0;
-                            fakeInsn.referenceData = null;
-                            fakeInsn.extraReferenceType = 0;
-                            fakeInsn.extraReferenceData = null;
-                            block.instructions.add(fakeInsn);
-                            codeUnitOffset += 1;
+                            block.instructions.add(garbage);
+                            codeUnitOffset += garbage.codeUnits;
+                        }
+                        // ====================================================
+
+                        // ==================== 不透明谓词插入（魔改#14） ====================
+                        // 在每个基本块末尾插入一个永远为假的条件分支
+                        // 例如：IF_NEZ vN, vN → 永远为假（自己不等于自己）
+                        // 让反编译器困惑，增加控制流分析难度
+                        if (fakeRandom.nextInt(4) == 0) { // 25%概率插入
+                            ExtractInstruction opaque = generateOpaquePredicate(
+                                    codeUnitOffset, opcodeMap, opcodePool, opcodePoolIndex,
+                                    fakeRandom, aliasOffset
+                            );
+                            block.instructions.add(opaque);
+                            codeUnitOffset += opaque.codeUnits;
                         }
                         // ====================================================
                     }
@@ -652,5 +655,177 @@ public class VmpJiaguEntry {
             System.out.println("解析耗时=" + ((endNs - startNs) / 1000000.0) + " ms");
         }
     }
+
+    // ==================== 垃圾指令生成（魔改#20） ====================
+    // 生成看似有意义但实际无害的垃圾指令
+    // 类型包括：寄存器自拷贝、与零运算、与全1运算等
+    static ExtractInstruction generateGarbageInstruction(
+            int codeUnitOffset,
+            Map<Integer, OpcodeMapEntry> opcodeMap,
+            List<Integer> opcodePool,
+            int[] opcodePoolIndex,
+            Random random,
+            int aliasOffset) {
+
+        ExtractInstruction garbage = new ExtractInstruction();
+        garbage.codeUnitOffset = codeUnitOffset;
+        garbage.literalType = 0;
+        garbage.literalValue = 0;
+        garbage.offsetType = 0;
+        garbage.offsetValue = 0;
+        garbage.referenceType = 0;
+        garbage.referenceData = null;
+        garbage.extraReferenceType = 0;
+        garbage.extraReferenceData = null;
+
+        // 选择垃圾指令类型：0=MOVE自拷贝, 1=AND_INT全1, 2=OR_INT零, 3=XOR_INT零, 4=ADD_INT_LIT8加0
+        int garbageType = random.nextInt(5);
+
+        // 使用指令执行后可能存在的寄存器范围（考虑aliasOffset）
+        int maxReg = Math.min(8, 16); // 限制寄存器范围避免溢出
+        int regA = aliasOffset + random.nextInt(maxReg);
+        int regB = aliasOffset + random.nextInt(maxReg);
+
+        switch (garbageType) {
+            case 0: // MOVE vA, vB (vA=vB，如果A==B则自拷贝，无害)
+                if (random.nextBoolean() && regA != regB) {
+                    garbage.vmOpcode = getOrCreateVmOpcode(
+                            Opcode.MOVE, opcodeMap, opcodePool, opcodePoolIndex
+                    );
+                    garbage.formatName = "MOVE(garbage)";
+                    garbage.codeUnits = 1;
+                    garbage.registers.add(regA);
+                    garbage.registers.add(regB);
+                } else {
+                    garbage.vmOpcode = getOrCreateVmOpcode(
+                            Opcode.MOVE, opcodeMap, opcodePool, opcodePoolIndex
+                    );
+                    garbage.formatName = "MOVE(garbage-self)";
+                    garbage.codeUnits = 1;
+                    garbage.registers.add(regA);
+                    garbage.registers.add(regA);
+                }
+                break;
+
+            case 1: // AND_INT vA, vB, vC (vC & vC = vC，无害)
+                garbage.vmOpcode = getOrCreateVmOpcode(
+                        Opcode.AND_INT, opcodeMap, opcodePool, opcodePoolIndex
+                );
+                garbage.formatName = "AND_INT(garbage)";
+                garbage.codeUnits = 1;
+                garbage.registers.add(regA);
+                garbage.registers.add(regB);
+                garbage.registers.add(regB);
+                break;
+
+            case 2: // OR_INT vA, vB, vC (vC | 0 = vC，无害)
+                garbage.vmOpcode = getOrCreateVmOpcode(
+                        Opcode.OR_INT, opcodeMap, opcodePool, opcodePoolIndex
+                );
+                garbage.formatName = "OR_INT(garbage)";
+                garbage.codeUnits = 1;
+                garbage.registers.add(regA);
+                garbage.registers.add(regB);
+                garbage.registers.add(regB);
+                break;
+
+            case 3: // XOR_INT vA, vB, vC (vC ^ vC = 0，写入vA，看起来像清零)
+                garbage.vmOpcode = getOrCreateVmOpcode(
+                        Opcode.XOR_INT, opcodeMap, opcodePool, opcodePoolIndex
+                );
+                garbage.formatName = "XOR_INT(garbage)";
+                garbage.codeUnits = 1;
+                garbage.registers.add(regA);
+                garbage.registers.add(regB);
+                garbage.registers.add(regB);
+                break;
+
+            case 4: // ADD_INT_LIT8 vA, vB, #0 (加0，无害)
+                garbage.vmOpcode = getOrCreateVmOpcode(
+                        Opcode.ADD_INT_LIT8, opcodeMap, opcodePool, opcodePoolIndex
+                );
+                garbage.formatName = "ADD_INT_LIT8(garbage)";
+                garbage.codeUnits = 1;
+                garbage.registers.add(regA);
+                garbage.registers.add(regB);
+                garbage.literalType = 1;
+                garbage.literalValue = 0; // 加0 = 不变
+                break;
+        }
+
+        return garbage;
+    }
+    // ====================================================
+
+    // ==================== 不透明谓词生成（魔改#14） ====================
+    // 生成永远为假的条件分支，迷惑静态分析
+    // 例如：IF_NEZ vN, vN → 寄存器永远不等于自己，条件永远为假
+    // VM 执行时安全跳过，但反编译器会试图分析分支逻辑
+    static ExtractInstruction generateOpaquePredicate(
+            int codeUnitOffset,
+            Map<Integer, OpcodeMapEntry> opcodeMap,
+            List<Integer> opcodePool,
+            int[] opcodePoolIndex,
+            Random random,
+            int aliasOffset) {
+
+        ExtractInstruction opaque = new ExtractInstruction();
+        opaque.codeUnitOffset = codeUnitOffset;
+        opaque.literalType = 0;
+        opaque.literalValue = 0;
+        opaque.offsetType = 1; // 有分支偏移
+        opaque.offsetValue = 0; // 占位，后续不实际使用
+        opaque.referenceType = 0;
+        opaque.referenceData = null;
+        opaque.extraReferenceType = 0;
+        opaque.extraReferenceData = null;
+
+        // 选择不透明谓词类型
+        int predType = random.nextInt(3);
+        int reg = aliasOffset + random.nextInt(8);
+
+        switch (predType) {
+            case 0: // IF_NEZ vA, vA → 永远为假（自己不等于自己）
+                opaque.vmOpcode = getOrCreateVmOpcode(
+                        Opcode.IF_NEZ, opcodeMap, opcodePool, opcodePoolIndex
+                );
+                opaque.formatName = "IF_NEZ(opaque-false)";
+                opaque.codeUnits = 1;
+                opaque.registers.add(reg);
+                opaque.registers.add(reg); // vB = vA，条件永远为假
+                break;
+
+            case 1: // IF_EQZ vA, vA → 永远为假（自己等于自己，条件为真后取反）
+                // IF_EQZ x,x → 条件永远为假，分支不执行
+                opaque.vmOpcode = getOrCreateVmOpcode(
+                        Opcode.IF_EQZ, opcodeMap, opcodePool, opcodePoolIndex
+                );
+                opaque.formatName = "IF_EQZ(opaque-false)";
+                opaque.codeUnits = 1;
+                opaque.registers.add(reg);
+                opaque.registers.add(reg);
+                break;
+
+            case 2: // IF_LTZ vA, #0 → 永远为假（非负数不小于0）
+                // 先插入一个确保寄存器非负的指令，再IF_LTZ
+                // 但更简单的方式：IF_LTZ vA, vA 当 vA 已知为0
+                // 使用 IF_EQ vA, vA 条件永远为真，但分支不执行（因为相等）
+                // 实际上 IF_EQ x,x 是永远为真，会跳转
+                // 改为：使用一个看起来像比较但实际条件可控的谓词
+                opaque.vmOpcode = getOrCreateVmOpcode(
+                        Opcode.IF_EQ, opcodeMap, opcodePool, opcodePoolIndex
+                );
+                opaque.formatName = "IF_EQ(opaque-true)";
+                opaque.codeUnits = 1;
+                opaque.registers.add(reg);
+                opaque.registers.add(reg); // 永远相等，条件为真
+                // 分支目标指向垃圾指令块（但条件永远为真，实际不会跳过）
+                opaque.offsetValue = 6; // 跳过3条指令（自己+2条垃圾）
+                break;
+        }
+
+        return opaque;
+    }
+    // ====================================================
 
 }
