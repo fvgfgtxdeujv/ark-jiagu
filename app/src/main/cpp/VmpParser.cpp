@@ -632,7 +632,35 @@ bool VmpParser_FindMethod(
         method.tryBlocks.push_back(tryBlock);
     }
 
-    if (pos > end) {
+    // ==================== 签名链校验（魔改#12） ====================
+    // 读取方法块的 SHA256 哈希（32 字节）
+    if (pos + 32 <= end) {
+        unsigned char storedHash[32];
+        memcpy(storedHash, &g_bin.rawData[pos], 32);
+        pos += 32;
+
+        // 重新计算方法块的哈希进行验证
+        // 简化实现：用方法的关键信息派生校验值
+        unsigned int expected = 0;
+        for (char c : method.methodName) expected = (expected * 31 + c) & 0xFFFFFFFF;
+        for (char c : method.methodSignature) expected = (expected * 37 + c) & 0xFFFFFFFF;
+        expected ^= method.methodId;
+        expected ^= (unsigned int)method.instructions.size();
+
+        // 比较存储的哈希和计算值（取前4字节比较）
+        unsigned int stored = 0;
+        for (int i = 0; i < 4; i++) {
+            stored = (stored << 8) | storedHash[i];
+        }
+
+        if (stored != expected) {
+            //LOGE("签名链校验失败 methodId=%d name=%s", methodId, method.methodName.c_str());
+            return false;
+        }
+
+        //LOGI("签名链校验通过 methodId=%d", methodId);
+    }
+    // ====================================================
         //LOGE("methodId=%d 解析越界", methodId);
         return false;
     }

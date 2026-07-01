@@ -83,6 +83,12 @@ struct VmpMethod {
     std::vector<VmpTryBlock> tryBlocks;
     std::vector<std::string> parameterTypes;
     std::vector<VmpInstruction> instructions;
+
+    // ==================== 签名链（魔改#12） ====================
+    // 方法块的 SHA256 哈希，用于校验方法内容是否被篡改
+    unsigned char methodHash[32];
+    bool hasMethodHash = false;
+    // ====================================================
 };
 
 struct VmpBinContext {

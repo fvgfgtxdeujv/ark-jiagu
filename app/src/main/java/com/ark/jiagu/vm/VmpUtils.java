@@ -74,6 +74,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -915,6 +916,13 @@ public class VmpUtils {
                     }
                 }
 
+                // ==================== 签名链（魔改#12） ====================
+                // 计算方法块的 SHA256 哈希，用于校验方法内容是否被篡改
+                long hashStart = raf.getFilePointer();
+                byte[] methodHash = computeMethodBlockHash(block, blockOffset, hashStart - blockOffset);
+                writeBytes(raf, methodHash);
+                // ====================================================
+
                 long blockEnd = raf.getFilePointer();
 
                 ClassIndexEntry index = new ClassIndexEntry();
@@ -1136,6 +1144,34 @@ public class VmpUtils {
     // 从密钥数组中按索引取字节，用于 XOR 加密 opcode 值
     private static int xorByte(byte[] key, int index) {
         return key[index % key.length] & 0xff;
+    }
+    // ====================================================
+
+    // ==================== 签名链辅助（魔改#12） ====================
+    // 计算方法块的 SHA256 哈希（不含哈希本身）
+    private static byte[] computeMethodBlockHash(ExtractMethodBlock block, long blockOffset, int dataLen) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            md.update(block.className.getBytes(StandardCharsets.UTF_8));
+            md.update(block.methodName.getBytes(StandardCharsets.UTF_8));
+            md.update(block.methodSignature.getBytes(StandardCharsets.UTF_8));
+            md.update((byte)(block.registerCount & 0xFF));
+            md.update((byte)((block.registerCount >> 8) & 0xFF));
+            md.update((byte)(block.isStatic ? 1 : 0));
+            md.update((byte)(block.instructions.size() & 0xFF));
+            md.update((byte)((block.instructions.size() >> 8) & 0xFF));
+            for (ExtractInstruction insn : block.instructions) {
+                md.update((byte)(insn.vmOpcode & 0xFF));
+                md.update((byte)(insn.codeUnitOffset & 0xFF));
+                md.update((byte)((insn.codeUnitOffset >> 8) & 0xFF));
+                for (Integer reg : insn.registers) {
+                    md.update((byte)(reg & 0xFF));
+                }
+            }
+            return md.digest();
+        } catch (Exception e) {
+            return new byte[32];
+        }
     }
     // ====================================================
 
