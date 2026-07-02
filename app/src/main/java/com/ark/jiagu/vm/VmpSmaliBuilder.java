@@ -251,7 +251,7 @@ class VmpSmaliBuilder {
                 Method newMethod = buildVmCallMethod(method, info, vmpClassType);
                 newMethods.add(newMethod);
 
-                System.out.println("跳过非法规则：" + ruleText);
+                System.out.println("方法重写为VM调用壳："
                         + dexName
                         + " "
                         + classDef.getType()
@@ -686,7 +686,7 @@ class VmpSmaliBuilder {
 
         DexFileFactory.writeDexFile(outFile.getAbsolutePath(), outDex);
 
-        System.out.println("输出重写dex： + outFile.getAbsolutePath()
+        System.out.println("输出重写dex：" + outFile.getAbsolutePath()
                 + " classCount=" + classes.size());
     }
     static int countClassMethods(ClassDef classDef) {

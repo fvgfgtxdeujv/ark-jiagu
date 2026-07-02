@@ -69,7 +69,7 @@ class VmpBinFormat {
                 // ==================== #13 冗余填充：方法块前随机垃圾数据 ====================
                 // 在每个方法块前写入4~32字节的随机垃圾数据
                 // 填充数据格式：0xFF 填充 + 末尾写入随机校验字节
-                int paddingBefore = 4 + (Math.abs(block.methodId * 2654435761) % 28);
+                int paddingBefore = 4 + (int)(Math.abs(block.methodId * 2654435761L) % 28);
                 raf.write(new byte[paddingBefore]); // 鍒濆濉厖
                 // 在每~2KB块末尾写入随机校验字节，使填充数据看起来像合法指令
                 byte[] junkPrefix = new byte[paddingBefore];
@@ -206,7 +206,7 @@ class VmpBinFormat {
                 long blockEnd = raf.getFilePointer();
 
                 // ==================== #13 冗余填充：方法块后随机垃圾数据====================
-                int paddingAfter = 4 + (Math.abs((block.methodId + 1) * 2246822519) % 28);
+                int paddingAfter = 4 + (int)(Math.abs((block.methodId + 1) * 2246822519L) % 28);
                 byte[] junkSuffix = new byte[paddingAfter];
                 new java.security.SecureRandom().nextBytes(junkSuffix);
                 raf.write(junkSuffix);

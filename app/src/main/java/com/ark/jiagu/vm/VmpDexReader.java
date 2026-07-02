@@ -20,7 +20,7 @@ class VmpDexReader {
 
         File parent = outFile.getParentFile();
         if (parent != null && !parent.exists() && !parent.mkdirs()) {
-            throw new IOException("鍒涘缓鐩綍澶辫触锛? + parent.getAbsolutePath());
+            throw new IOException("创建目录失败：" + parent.getAbsolutePath());
         }
 
         try (InputStream in = zipFile.getInputStream(entry);
