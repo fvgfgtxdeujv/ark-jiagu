@@ -1,8 +1,6 @@
 *.iml
 .gradle
 /local.properties
-# 签名证书配置（包含敏感信息，不纳入版本控制）
-keystore.properties
 /.idea/caches
 /.idea/libraries
 /.idea/modules.xml
@@ -15,5 +13,6 @@ keystore.properties
 .externalNativeBuild
 .cxx
 local.properties
-# 签名证书配置（包含敏感信息，不纳入版本控制）
+# 签名证书（私钥文件，绝不纳入版本控制）
 keystore.properties
+*.jks
