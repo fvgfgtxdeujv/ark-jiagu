@@ -637,13 +637,10 @@ class VmpBinFormat {
     }
 
     // ==================== #16 加密跳转表辅助：字节旋转混淆 ====================
-            long indexTableOffset = raf.getFilePointer();
-            out.offsetValue = payload.getArrayElements().size();
     static long rotateLong(long value, int seed) {
         int shift = (seed & 0x1F) + 1; // 1~32 位旋转
         if (shift == 32) shift = 0;
         long rotated = (value << shift) | (value >>> (32 - shift));
-        // 涓?mask 娣峰悎
         rotated ^= ((long)seed << 16) | (seed & 0xFFFFL);
         return rotated & 0xFFFFFFFFL;
     }

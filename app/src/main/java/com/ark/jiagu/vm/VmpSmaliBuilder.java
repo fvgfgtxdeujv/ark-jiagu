@@ -41,7 +41,7 @@ class VmpSmaliBuilder {
 
     public static ClassDef createVmpClass(String soName, String packageName) {
         if (packageName == null || packageName.trim().isEmpty()) {
-            throw new IllegalArgumentException("鍖呭悕涓嶈兘涓虹┖");
+            throw new IllegalArgumentException("包名不能为空");
         }
 
         String cleanPackageName = packageName.trim();
@@ -713,14 +713,13 @@ class VmpSmaliBuilder {
             }
 
             if (!oldDex.delete()) {
-                throw new IOException("删除原始dex失败： + oldDex.getAbsolutePath());
+                throw new IOException("删除原始dex失败：" + oldDex.getAbsolutePath());
             }
 
-            System.out.println("宸插垹闄ゅ師濮媎ex锛? + oldDex.getName());
+            System.out.println("已删除原始dex：" + oldDex.getName());
             oldIndex++;
         }
 
-import com.android.tools.smali.dexlib2.AccessFlags;
         int newIndex = 1;
         while (true) {
             String tempName = newIndex == 1 ? "classes_c.dex" : "classes" + newIndex + "_c.dex";
@@ -734,13 +733,13 @@ import com.android.tools.smali.dexlib2.AccessFlags;
             File finalDex = new File(dexDir, finalName);
 
             if (!tempDex.renameTo(finalDex)) {
-                throw new IOException("重命名dex失败：
+                throw new IOException("重命名dex失败："
                         + tempDex.getAbsolutePath()
                         + " -> "
                         + finalDex.getAbsolutePath());
             }
 
-            System.out.println("宸查噸鍛藉悕dex锛? + tempDex.getName() + " -> " + finalDex.getName());
+            System.out.println("已重命名dex：" + tempDex.getName() + " -> " + finalDex.getName());
             newIndex++;
         }
 
