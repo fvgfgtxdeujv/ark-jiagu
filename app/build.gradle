@@ -2,6 +2,25 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+def loadKeystoreProperties() {
+    def props = new Properties()
+    def keyFile = file("keystore.properties")
+    if (keyFile.exists()) {
+        keyFile.withInputStream { props.load(it) }
+        return props
+    }
+    def gradlePropsFile = file("../gradle.properties")
+    if (gradlePropsFile.exists()) {
+        gradlePropsFile.withInputStream { props.load(it) }
+    }
+    if (!props.containsKey('storeFile') || props['storeFile'] == null) {
+        throw new GradleException(
+            "签名证书未配置。请在 app/ 目录创建 keystore.properties 文件。\n参考 keystore.properties.sample 模板。"
+        )
+    }
+    return props
+}
+
 android {
     namespace 'com.ark.jiagu'
     compileSdk {
@@ -54,20 +73,22 @@ android {
     }
     signingConfigs {
         debug {
-            storeFile file("D:\\Desktop\\mykeys.jks")
-            storePassword "mykeys"
-            keyAlias "mykeys"
-            keyPassword "mykeys"
+            def _p = loadKeystoreProperties()
+            storeFile file(_p.storeFile)
+            storePassword _p.storePassword
+            keyAlias _p.keyAlias
+            keyPassword _p.keyPassword
             enableV1Signing true
             enableV2Signing true
             enableV3Signing true
             enableV4Signing false
         }
         release {
-            storeFile file("D:\\Desktop\\mykeys.jks")
-            storePassword "mykeys"
-            keyAlias "mykeys"
-            keyPassword "mykeys"
+            def _p = loadKeystoreProperties()
+            storeFile file(_p.storeFile)
+            storePassword _p.storePassword
+            keyAlias _p.keyAlias
+            keyPassword _p.keyPassword
             enableV1Signing true
             enableV2Signing true
             enableV3Signing true
