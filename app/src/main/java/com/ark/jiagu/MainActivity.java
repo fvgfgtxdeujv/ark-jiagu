@@ -125,6 +125,8 @@ public class MainActivity extends ComponentActivity {
     private native boolean isValidDex(byte[] data);
 
     private native byte[] intToLe4(int value);
+
+    private native void buildEncryptedShellDex(File dexDir, File shellDexFile, String realApplicationName, byte[] signHash64);
     private SoNamePreset[] SO_NAME_PRESETS;
     @Override
     protected void onCreate(Bundle savedInstanceState) {
