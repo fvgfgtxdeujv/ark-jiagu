@@ -6,6 +6,7 @@
 #include <android/log.h>
 #include <dlfcn.h>
 #include <zlib.h>
+#include <fcntl.h>
 
 #define LOG_TAG "ArkVMP_ArkVMP"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -13,8 +14,8 @@
 
 // ==================== SO 自校验（魔改#9） ====================
 // 在 JNI_OnLoad 时计算 SO 的 CRC32，后续定期校验是否被 patch
-static uLong g_selfCrc32 = 0;
-static bool g_selfCrcValid = false;
+uLong g_selfCrc32 = 0;
+bool g_selfCrcValid = false;
 
 // 从 /proc/self/maps 读取 SO 文件路径
 static std::string getSelfSoPath() {
@@ -97,7 +98,7 @@ static bool initSelfCrc32() {
 }
 
 // 校验 SO 是否被修改
-static bool checkSelfIntegrity() {
+bool checkSelfIntegrity() {
     if (!g_selfCrcValid) {
         // 还没建立基线，先建立
         return initSelfCrc32();

@@ -2140,13 +2140,12 @@ public class VmpUtils {
         String methodSignature;
         int accessFlags;
         int registerCount;
+        int registerAliasOffset;
         int paramCount;
         String returnType;
 
         boolean isStatic;
-        List<String> parameterTypes = new ArrayList<>();
-
-        List<ExtractInstruction> instructions = new ArrayList<>();
+        List<String> parameterTypes = new ArrayList<>();        List<ExtractInstruction> instructions = new ArrayList<>();
         List<ExtractTryBlock> tryBlocks = new ArrayList<>();
     }
 
@@ -2156,7 +2155,7 @@ public class VmpUtils {
         String realOpcodeName;
     }
 
-    private static class ExtractInstruction {
+    static class ExtractInstruction {
         int codeUnitOffset;
         int vmOpcode;
 

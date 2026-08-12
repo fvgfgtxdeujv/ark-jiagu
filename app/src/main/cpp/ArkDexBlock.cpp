@@ -3,20 +3,18 @@
 #include <jni.h>
 #include <cstring>
 
-#define ARK_BLOCK_USE_SIGN_KEY_FLAG {0x41, 0x52, 0x4B, 0x53} // "ARKS"
-
 static const unsigned char ARK_BLOCK_USE_SIGN_KEY_FLAG[4] = {
         0x41, 0x52, 0x4B, 0x53 // "ARKS"
 };
 
-static uint32_t readLe32(const unsigned char *p) {
+uint32_t readLe32(const unsigned char *p) {
     return ((uint32_t) p[0])
            | ((uint32_t) p[1] << 8)
            | ((uint32_t) p[2] << 16)
            | ((uint32_t) p[3] << 24);
 }
 
-static std::vector<unsigned char> xorData(
+std::vector<unsigned char> xorData(
         const unsigned char *data,
         size_t len,
         const unsigned char *key,
@@ -32,7 +30,7 @@ static std::vector<unsigned char> xorData(
     return out;
 }
 
-static bool readLe32FromVector(
+bool readLe32FromVector(
         const std::vector<unsigned char> &data,
         size_t &pos,
         uint32_t &out
@@ -46,7 +44,7 @@ static bool readLe32FromVector(
     return true;
 }
 
-static bool parsePayloadIndexPlainBytes(
+bool parsePayloadIndexPlainBytes(
         const std::vector<unsigned char> &plain,
         std::vector<ArkPayloadIndexEntry> &outEntries
 ) {
@@ -114,7 +112,7 @@ static bool parsePayloadIndexPlainBytes(
     return true;
 }
 
-static bool parseEncryptedBlockInfoByIndex(
+bool parseEncryptedBlockInfoByIndex(
         const std::vector<unsigned char> &allData,
         size_t blockOffset,
         size_t blockSize,
@@ -197,7 +195,7 @@ static bool parseEncryptedBlockInfoByIndex(
     return true;
 }
 
-static bool parseOneEncryptedBlockBackward(
+bool parseOneEncryptedBlockBackward(
         JNIEnv *env,
         const std::vector<unsigned char> &allData,
         size_t &cursor,
@@ -273,7 +271,7 @@ static bool parseOneEncryptedBlockBackward(
     return true;
 }
 
-static bool parseOneEncryptedBlockInfoBackward(
+bool parseOneEncryptedBlockInfoBackward(
         const std::vector<unsigned char> &allData,
         size_t &cursor,
         ArkDexBlockInfo &outInfo,

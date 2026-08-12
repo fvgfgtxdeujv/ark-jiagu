@@ -8,6 +8,7 @@
 #define LOG_TAG "ArkVMP_Handlers"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define VM_MAX_REGISTERS 65536
 
 static VmHandler g_handlerTable[256];
 //==================================================================================辅助方法区域
@@ -282,7 +283,7 @@ static bool buildJValueArgs(
 
     for (int i = 0; i < static_cast<int>(paramTypes.size()); i++) {
         if (regIndex >= static_cast<int>(insn.registers.size())) {
-            LOGE("构造参数失败，寄存器不�?index=%d", i);
+            LOGE("构造参数失败，寄存器不足 index=%d", i);
             return false;
         }
 
@@ -344,7 +345,7 @@ static void logAndClearJavaException(JNIEnv *env, const char *tag) {
     jclass throwableClass = env->FindClass("java/lang/Throwable");
     if (env->ExceptionCheck() || throwableClass == nullptr) {
         env->ExceptionClear();
-        LOGE("%s 获取Throwable类失�?, tag);
+        LOGE("%s 获取Throwable类失败", tag);
         return;
     }
 
@@ -372,7 +373,7 @@ static void logAndClearJavaException(JNIEnv *env, const char *tag) {
 
     const char *msg = env->GetStringUTFChars(message, nullptr);
     if (msg != nullptr) {
-        LOGE("%s Java异常�?s", tag, msg);
+        LOGE("%s Java异常：%s", tag, msg);
         env->ReleaseStringUTFChars(message, msg);
     }
 }
@@ -393,7 +394,7 @@ static bool buildJValuesFromRegisters(
 
     for (int i = 0; i < static_cast<int>(paramTypes.size()); i++) {
         if (regIndex >= static_cast<int>(registers.size())) {
-            LOGE("INVOKE_RANGE 参数寄存器数量不�?index=%d", i);
+            LOGE("INVOKE_RANGE 参数寄存器数量不足 index=%d", i);
             return false;
         }
 
@@ -461,6 +462,97 @@ static jclass findClassByType(JNIEnv *env, const std::string &type) {
     return cls;
 }
 
+static jclass findClassByTypeWithObjectLoader(JNIEnv *env, jobject obj, const std::string &type) {
+    if (env == nullptr || type.empty()) {
+        return nullptr;
+    }
+
+    std::string name = type;
+
+    if (name[0] == 'L' && name[name.length() - 1] == ';') {
+        name = name.substr(1, name.length() - 2);
+    }
+
+    std::string dotName = name;
+    for (size_t i = 0; i < dotName.length(); i++) {
+        if (dotName[i] == '/') {
+            dotName[i] = '.';
+        }
+    }
+
+    jclass cls = env->FindClass(name.c_str());
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+    }
+
+    if (cls != nullptr) {
+        return cls;
+    }
+
+    if (obj == nullptr) {
+        return nullptr;
+    }
+
+    jclass objClass = env->GetObjectClass(obj);
+    if (env->ExceptionCheck() || objClass == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+
+    jclass classClass = env->FindClass("java/lang/Class");
+    if (env->ExceptionCheck() || classClass == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+
+    jmethodID getClassLoaderMethod = env->GetMethodID(
+            classClass,
+            "getClassLoader",
+            "()Ljava/lang/ClassLoader;"
+    );
+
+    if (env->ExceptionCheck() || getClassLoaderMethod == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+
+    jobject classLoader = env->CallObjectMethod(objClass, getClassLoaderMethod);
+    if (env->ExceptionCheck() || classLoader == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+
+    jclass classLoaderClass = env->FindClass("java/lang/ClassLoader");
+    if (env->ExceptionCheck() || classLoaderClass == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+
+    jmethodID loadClassMethod = env->GetMethodID(
+            classLoaderClass,
+            "loadClass",
+            "(Ljava/lang/String;)Ljava/lang/Class;"
+    );
+
+    if (env->ExceptionCheck() || loadClassMethod == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+
+    jstring className = env->NewStringUTF(dotName.c_str());
+    if (className == nullptr) {
+        return nullptr;
+    }
+
+    jobject loadedClass = env->CallObjectMethod(classLoader, loadClassMethod, className);
+    if (env->ExceptionCheck() || loadedClass == nullptr) {
+        env->ExceptionClear();
+        return nullptr;
+    }
+
+    return static_cast<jclass>(loadedClass);
+}
+
 
 
 static bool parseMethodReference(
@@ -512,7 +604,7 @@ static bool parseFieldReference(
 
     return true;
 }
-// 实例字段 / 实例方法用：�?obj 的情�?
+// 实例字段 / 实例方法用：有 obj 的情况
 static jclass findVmClassForObject(
         JNIEnv *env,
         jobject obj,
@@ -533,17 +625,17 @@ static jclass findVmClassForObject(
         }
     }
 
-    // 2. 用对�?ClassLoader 加载声明�?
+    // 2. 用对象 ClassLoader 加载声明类
     if (cls == nullptr && obj != nullptr) {
-        cls = findClassByType(env, obj, classType);
+        cls = findClassByTypeWithObjectLoader(env, obj, classType);
     }
 
-    // 3. �?Runtime Context �?ClassLoader
+    // 3. 用 Runtime Context 的 ClassLoader
     if (cls == nullptr) {
         cls = findClassByTypeWithRuntimeContext(env, classType);
     }
 
-    // 4. 最后才�?FindClass
+    // 4. 最后才用 FindClass
     if (cls == nullptr) {
         cls = findClassByType(env, classType);
     }
@@ -551,7 +643,7 @@ static jclass findVmClassForObject(
     return cls;
 }
 
-// 静态字�?/ new-instance / const-class 用：没有 obj 的情�?
+// 静态字段 / new-instance / const-class 用：没有 obj 的情况
 static jclass findVmClassForStatic(
         JNIEnv *env,
         const std::string &classType
@@ -562,7 +654,7 @@ static jclass findVmClassForStatic(
 
     jclass cls = nullptr;
 
-    // 1. 优先�?Runtime Context �?ClassLoader
+    // 1. 优先用 Runtime Context 的 ClassLoader
     cls = findClassByTypeWithRuntimeContext(env, classType);
 
     // 2. 再用 FindClass
@@ -641,7 +733,7 @@ static bool VmContext_JumpToExceptionHandler(VmContext &ctx, int throwOffset) {
 }
 //==================================================================================
 
-//====================================指令实现�?=================================
+//====================================指令实现区==================================
 //指令 NOP
 bool VmHandleNop(VmContext &ctx, const VmpInstruction &insn) {
     (void) insn;
@@ -655,7 +747,7 @@ bool VmHandleNop(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MOVE
 bool VmHandleMove(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MOVE 寄存器数量不�?);
+        LOGE("MOVE 寄存器数量不足");
         return false;
     }
 
@@ -675,7 +767,7 @@ bool VmHandleMove(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MOVE_FROM16
 bool VmHandleMoveFrom16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MOVE_FROM16 寄存器数量不�?);
+        LOGE("MOVE_FROM16 寄存器数量不足");
         return false;
     }
 
@@ -695,7 +787,7 @@ bool VmHandleMoveFrom16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MOVE_16
 bool VmHandleMove16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MOVE_16 寄存器数量不�?);
+        LOGE("MOVE_16 寄存器数量不足");
         return false;
     }
 
@@ -715,7 +807,7 @@ bool VmHandleMove16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MOVE_WIDE
 bool VmHandleMoveWide(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MOVE_WIDE 寄存器数量不�?);
+        LOGE("MOVE_WIDE 寄存器数量不足");
         return false;
     }
 
@@ -735,7 +827,7 @@ bool VmHandleMoveWide(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MOVE_WIDE_FROM16
 bool VmHandleMoveWideFrom16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MOVE_WIDE_FROM16 寄存器数量不�?);
+        LOGE("MOVE_WIDE_FROM16 寄存器数量不足");
         return false;
     }
 
@@ -753,7 +845,7 @@ bool VmHandleMoveWideFrom16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MOVE_WIDE_16
 bool VmHandleMoveWide16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MOVE_WIDE_16 寄存器数量不�?);
+        LOGE("MOVE_WIDE_16 寄存器数量不足");
         return false;
     }
 
@@ -772,7 +864,7 @@ bool VmHandleMoveWide16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MOVE_OBJECT
 bool VmHandleMoveObject(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MOVE_OBJECT 寄存器数量不�?);
+        LOGE("MOVE_OBJECT 寄存器数量不足");
         return false;
     }
 
@@ -793,7 +885,7 @@ bool VmHandleMoveObject(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MOVE_OBJECT_FROM16
 bool VmHandleMoveObjectFrom16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MOVE_OBJECT_FROM16 寄存器数量不�?);
+        LOGE("MOVE_OBJECT_FROM16 寄存器数量不足");
         return false;
     }
 
@@ -811,7 +903,7 @@ bool VmHandleMoveObjectFrom16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MOVE_OBJECT_16
 bool VmHandleMoveObject16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MOVE_OBJECT_16 寄存器数量不�?);
+        LOGE("MOVE_OBJECT_16 寄存器数量不足");
         return false;
     }
 
@@ -829,7 +921,7 @@ bool VmHandleMoveObject16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MOVE_RESULT
 bool VmHandleMoveResult(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("MOVE_RESULT 寄存器数量不�?);
+        LOGE("MOVE_RESULT 寄存器数量不足");
         return false;
     }
 
@@ -848,7 +940,7 @@ bool VmHandleMoveResult(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MOVE_RESULT_WIDE
 bool VmHandleMoveResultWide(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("MOVE_RESULT_WIDE 寄存器数量不�?);
+        LOGE("MOVE_RESULT_WIDE 寄存器数量不足");
         return false;
     }
 
@@ -866,7 +958,7 @@ bool VmHandleMoveResultWide(VmContext &ctx, const VmpInstruction &insn) {
 
 bool VmHandleMoveResultObject(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("MOVE_RESULT_OBJECT 寄存器数量不�?);
+        LOGE("MOVE_RESULT_OBJECT 寄存器数量不足");
         return false;
     }
 
@@ -896,7 +988,7 @@ bool VmHandleMoveResultObject(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MOVE_EXCEPTION
 bool VmHandleMoveException(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("MOVE_EXCEPTION 寄存器数量不�?);
+        LOGE("MOVE_EXCEPTION 寄存器数量不足");
         return false;
     }
 
@@ -923,7 +1015,7 @@ bool VmHandleReturnVoid(VmContext &ctx, const VmpInstruction &insn) {
 //指令 RETURN
 bool VmHandleReturn(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("RETURN 寄存器数量不�?);
+        LOGE("RETURN 寄存器数量不足");
         return false;
     }
 
@@ -947,7 +1039,7 @@ bool VmHandleReturn(VmContext &ctx, const VmpInstruction &insn) {
 //指令 RETURN_WIDE
 bool VmHandleReturnWide(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("RETURN_WIDE 寄存器数量不�?);
+        LOGE("RETURN_WIDE 寄存器数量不足");
         return false;
     }
 
@@ -967,7 +1059,7 @@ bool VmHandleReturnWide(VmContext &ctx, const VmpInstruction &insn) {
 //指令 RETURN_OBJECT
 bool VmHandleReturnObject(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("RETURN_OBJECT 寄存器数量不�?);
+        LOGE("RETURN_OBJECT 寄存器数量不足");
         return false;
     }
 
@@ -984,7 +1076,7 @@ bool VmHandleReturnObject(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CONST_4
 bool VmHandleConst4(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST_4 寄存器数量不�?);
+        LOGE("CONST_4 寄存器数量不足");
         return false;
     }
 
@@ -994,7 +1086,7 @@ bool VmHandleConst4(VmContext &ctx, const VmpInstruction &insn) {
     ctx.regs[dst].intValue = value;
     ctx.regs[dst].longValue = value;
     ctx.regs[dst].kind = VM_REG_INT;
-    // 关键修复�?
+    // 关键修复：
     // const/4 vX, #0 在对象参数场景通常表示 null
     if (value == 0) {
         ctx.regs[dst].objectValue = nullptr;
@@ -1009,7 +1101,7 @@ bool VmHandleConst4(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CONST_16
 bool VmHandleConst16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST_16 寄存器数量不�?);
+        LOGE("CONST_16 寄存器数量不足");
         return false;
     }
 
@@ -1031,7 +1123,7 @@ bool VmHandleConst16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CONST
 bool VmHandleConst(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST 寄存器数量不�?);
+        LOGE("CONST 寄存器数量不足");
         return false;
     }
 
@@ -1053,7 +1145,7 @@ bool VmHandleConst(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CONST_HIGH16
 bool VmHandleConstHigh16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST_HIGH16 寄存器数量不�?);
+        LOGE("CONST_HIGH16 寄存器数量不足");
         return false;
     }
 
@@ -1073,7 +1165,7 @@ bool VmHandleConstHigh16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CONST_WIDE_16
 bool VmHandleConstWide16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST_WIDE_16 寄存器数量不�?);
+        LOGE("CONST_WIDE_16 寄存器数量不足");
         return false;
     }
 
@@ -1093,7 +1185,7 @@ bool VmHandleConstWide16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CONST_WIDE_32
 bool VmHandleConstWide32(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST_WIDE_32 寄存器数量不�?);
+        LOGE("CONST_WIDE_32 寄存器数量不足");
         return false;
     }
 
@@ -1113,7 +1205,7 @@ bool VmHandleConstWide32(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CONST_WIDE
 bool VmHandleConstWide(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST_WIDE 寄存器数量不�?);
+        LOGE("CONST_WIDE 寄存器数量不足");
         return false;
     }
 
@@ -1133,7 +1225,7 @@ bool VmHandleConstWide(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CONST_WIDE_HIGH16
 bool VmHandleConstWideHigh16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST_WIDE_HIGH16 寄存器数量不�?);
+        LOGE("CONST_WIDE_HIGH16 寄存器数量不足");
         return false;
     }
     int dst = insn.registers[0];
@@ -1150,7 +1242,7 @@ bool VmHandleConstWideHigh16(VmContext &ctx, const VmpInstruction &insn) {
 }
 bool VmHandleConstString(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST_STRING 寄存器数量不�?);
+        LOGE("CONST_STRING 寄存器数量不足");
         return false;
     }
 
@@ -1159,7 +1251,7 @@ bool VmHandleConstString(VmContext &ctx, const VmpInstruction &insn) {
     jobject strObj = ctx.env->NewStringUTF(insn.referenceData.c_str());
     if (ctx.env->ExceptionCheck() || strObj == nullptr) {
         ctx.env->ExceptionClear();
-        LOGE("CONST_STRING 创建字符串失�?);
+        LOGE("CONST_STRING 创建字符串失败");
         return false;
     }
 
@@ -1175,7 +1267,7 @@ bool VmHandleConstString(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CONST_STRING_JUMBO
 bool VmHandleConstStringJumbo(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST_STRING_JUMBO 寄存器数量不�?);
+        LOGE("CONST_STRING_JUMBO 寄存器数量不足");
         return false;
     }
 
@@ -1184,7 +1276,7 @@ bool VmHandleConstStringJumbo(VmContext &ctx, const VmpInstruction &insn) {
     jobject strObj = ctx.env->NewStringUTF(insn.referenceData.c_str());
     if (ctx.env->ExceptionCheck() || strObj == nullptr) {
         ctx.env->ExceptionClear();
-        LOGE("CONST_STRING_JUMBO 创建字符串失�?);
+        LOGE("CONST_STRING_JUMBO 创建字符串失败");
         return false;
     }
 
@@ -1199,7 +1291,7 @@ bool VmHandleConstStringJumbo(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CONST_CLASS
 bool VmHandleConstClass(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST_CLASS 寄存器数量不�?);
+        LOGE("CONST_CLASS 寄存器数量不足");
         return false;
     }
 
@@ -1207,7 +1299,7 @@ bool VmHandleConstClass(VmContext &ctx, const VmpInstruction &insn) {
 
     jclass cls = findVmClassForStatic(ctx.env, insn.referenceData);
     if (cls == nullptr) {
-        LOGE("CONST_CLASS 找不到类�?s", insn.referenceData.c_str());
+        LOGE("CONST_CLASS 找不到类：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -1221,7 +1313,7 @@ bool VmHandleConstClass(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MONITOR_ENTER
 bool VmHandleMonitorEnter(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("MONITOR_ENTER 寄存器数量不�?);
+        LOGE("MONITOR_ENTER 寄存器数量不足");
         return false;
     }
 
@@ -1239,7 +1331,7 @@ bool VmHandleMonitorEnter(VmContext &ctx, const VmpInstruction &insn) {
             ctx.env->ExceptionClear();
         }
 
-        LOGE("MONITOR_ENTER 进入监视器失�?v%d object=%p",
+        LOGE("MONITOR_ENTER 进入监视器失败 v%d object=%p",
              objReg,
              obj);
         return false;
@@ -1254,7 +1346,7 @@ bool VmHandleMonitorEnter(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MONITOR_EXIT
 bool VmHandleMonitorExit(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("MONITOR_EXIT 寄存器数量不�?);
+        LOGE("MONITOR_EXIT 寄存器数量不足");
         return false;
     }
 
@@ -1287,7 +1379,7 @@ bool VmHandleMonitorExit(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CHECK_CAST
 bool VmHandleCheckCast(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CHECK_CAST 寄存器数量不�?);
+        LOGE("CHECK_CAST 寄存器数量不足");
         return false;
     }
 
@@ -1306,7 +1398,7 @@ bool VmHandleCheckCast(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, insn.referenceData);
 
     if (cls == nullptr) {
-        LOGE("CHECK_CAST 找不到类�?s", insn.referenceData.c_str());
+        LOGE("CHECK_CAST 找不到类：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -1320,7 +1412,7 @@ bool VmHandleCheckCast(VmContext &ctx, const VmpInstruction &insn) {
     }
 
     if (!ok) {
-        LOGE("CHECK_CAST 类型不匹�?v%d object=%p type=%s",
+        LOGE("CHECK_CAST 类型不匹配 v%d object=%p type=%s",
              objReg,
              obj,
              insn.referenceData.c_str());
@@ -1337,7 +1429,7 @@ bool VmHandleCheckCast(VmContext &ctx, const VmpInstruction &insn) {
 //指令 INSTANCE_OF
 bool VmHandleInstanceOf(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("INSTANCE_OF 寄存器数量不�?);
+        LOGE("INSTANCE_OF 寄存器数量不足");
         return false;
     }
 
@@ -1359,14 +1451,14 @@ bool VmHandleInstanceOf(VmContext &ctx, const VmpInstruction &insn) {
 
     jclass cls = findVmClassForObject(ctx.env, obj, insn.referenceData);
     if (cls == nullptr) {
-        LOGE("INSTANCE_OF 找不到类�?s", insn.referenceData.c_str());
+        LOGE("INSTANCE_OF 找不到类：%s", insn.referenceData.c_str());
         return false;
     }
 
     jboolean result = ctx.env->IsInstanceOf(obj, cls);
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("INSTANCE_OF 判断失败�?s", insn.referenceData.c_str());
+        LOGE("INSTANCE_OF 判断失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -1383,7 +1475,7 @@ bool VmHandleInstanceOf(VmContext &ctx, const VmpInstruction &insn) {
 //指令 ARRAY_LENGTH
 bool VmHandleArrayLength(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("ARRAY_LENGTH 寄存器数量不�?);
+        LOGE("ARRAY_LENGTH 寄存器数量不足");
         return false;
     }
 
@@ -1417,7 +1509,7 @@ bool VmHandleArrayLength(VmContext &ctx, const VmpInstruction &insn) {
 //指令 NEW_INSTANCE
 bool VmHandleNewInstance(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("NEW_INSTANCE 寄存器数量不�?);
+        LOGE("NEW_INSTANCE 寄存器数量不足");
         return false;
     }
 
@@ -1436,17 +1528,17 @@ bool VmHandleNewInstance(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForStatic(ctx.env, insn.referenceData);
 
     if (cls == nullptr && loaderBaseObj != nullptr) {
-        cls = findClassByType(ctx.env, loaderBaseObj, insn.referenceData);
+        cls = findClassByTypeWithObjectLoader(ctx.env, loaderBaseObj, insn.referenceData);
     }
     if (cls == nullptr) {
-        LOGE("NEW_INSTANCE 找不到类�?s", insn.referenceData.c_str());
+        LOGE("NEW_INSTANCE 找不到类：%s", insn.referenceData.c_str());
         return false;
     }
 
     jobject obj = ctx.env->AllocObject(cls);
     if (ctx.env->ExceptionCheck() || obj == nullptr) {
         ctx.env->ExceptionClear();
-        LOGE("NEW_INSTANCE 创建对象失败�?s", insn.referenceData.c_str());
+        LOGE("NEW_INSTANCE 创建对象失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -1460,7 +1552,7 @@ bool VmHandleNewInstance(VmContext &ctx, const VmpInstruction &insn) {
 //指令 NEW_ARRAY
 bool VmHandleNewArray(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("NEW_ARRAY 寄存器数量不�?);
+        LOGE("NEW_ARRAY 寄存器数量不足");
         return false;
     }
 
@@ -1496,7 +1588,7 @@ bool VmHandleNewArray(VmContext &ctx, const VmpInstruction &insn) {
 
         jclass elementClass = findClassByType(ctx.env, elementType);
         if (elementClass == nullptr) {
-            LOGE("NEW_ARRAY 找不到对象数组元素类�?s", elementType.c_str());
+            LOGE("NEW_ARRAY 找不到对象数组元素类：%s", elementType.c_str());
             return false;
         }
 
@@ -1527,7 +1619,7 @@ bool VmHandleFilledNewArray(VmContext &ctx, const VmpInstruction &insn) {
 
     std::string arrayType = insn.referenceData;
     if (arrayType.empty() || arrayType[0] != '[') {
-        LOGE("FILLED_NEW_ARRAY 数组类型错误�?s", arrayType.c_str());
+        LOGE("FILLED_NEW_ARRAY 数组类型错误：%s", arrayType.c_str());
         return false;
     }
 
@@ -1616,7 +1708,7 @@ bool VmHandleFilledNewArray(VmContext &ctx, const VmpInstruction &insn) {
         jclass elementClass = ctx.env->FindClass(elementClassName.c_str());
         if (elementClass == nullptr || ctx.env->ExceptionCheck()) {
             ctx.env->ExceptionClear();
-            LOGE("FILLED_NEW_ARRAY 找不到对象数组元素类�?s", elementClassName.c_str());
+            LOGE("FILLED_NEW_ARRAY 找不到对象数组元素类：%s", elementClassName.c_str());
             return false;
         }
 
@@ -1634,7 +1726,7 @@ bool VmHandleFilledNewArray(VmContext &ctx, const VmpInstruction &insn) {
 
         arrayObj = arr;
     } else {
-        LOGE("FILLED_NEW_ARRAY 暂不支持数组类型�?s", arrayType.c_str());
+        LOGE("FILLED_NEW_ARRAY 暂不支持数组类型：%s", arrayType.c_str());
         return false;
     }
 
@@ -1658,7 +1750,7 @@ bool VmHandleFilledNewArrayRange(VmContext &ctx, const VmpInstruction &insn) {
 
     std::string arrayType = insn.referenceData;
     if (arrayType.empty() || arrayType[0] != '[') {
-        LOGE("FILLED_NEW_ARRAY_RANGE 数组类型错误�?s", arrayType.c_str());
+        LOGE("FILLED_NEW_ARRAY_RANGE 数组类型错误：%s", arrayType.c_str());
         return false;
     }
 
@@ -1747,7 +1839,7 @@ bool VmHandleFilledNewArrayRange(VmContext &ctx, const VmpInstruction &insn) {
         jclass elementClass = ctx.env->FindClass(elementClassName.c_str());
         if (elementClass == nullptr || ctx.env->ExceptionCheck()) {
             ctx.env->ExceptionClear();
-            LOGE("FILLED_NEW_ARRAY_RANGE 找不到对象数组元素类�?s", elementClassName.c_str());
+            LOGE("FILLED_NEW_ARRAY_RANGE 找不到对象数组元素类：%s", elementClassName.c_str());
             return false;
         }
 
@@ -1765,7 +1857,7 @@ bool VmHandleFilledNewArrayRange(VmContext &ctx, const VmpInstruction &insn) {
 
         arrayObj = arr;
     } else {
-        LOGE("FILLED_NEW_ARRAY_RANGE 暂不支持数组类型�?s", arrayType.c_str());
+        LOGE("FILLED_NEW_ARRAY_RANGE 暂不支持数组类型：%s", arrayType.c_str());
         return false;
     }
 
@@ -1786,7 +1878,7 @@ bool VmHandleFilledNewArrayRange(VmContext &ctx, const VmpInstruction &insn) {
 //指令 FILL_ARRAY_DATA
 bool VmHandleFillArrayData(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("FILL_ARRAY_DATA 寄存器数量不�?);
+        LOGE("FILL_ARRAY_DATA 寄存器数量不足");
         return false;
     }
 
@@ -1879,7 +1971,7 @@ bool VmHandleFillArrayData(VmContext &ctx, const VmpInstruction &insn) {
 //指令 THROW
 bool VmHandleThrow(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("THROW 寄存器数量不�?);
+        LOGE("THROW 寄存器数量不足");
         return false;
     }
 
@@ -1909,7 +2001,7 @@ bool VmHandleGoto(VmContext &ctx, const VmpInstruction &insn) {
     int targetIndex = VmContext_FindInstructionIndexByOffset(ctx, targetOffset);
 
     if (targetIndex < 0) {
-        LOGE("GOTO 找不到目�?offset=%d currentOffset=%d jumpOffset=%d",
+        LOGE("GOTO 找不到目标 offset=%d currentOffset=%d jumpOffset=%d",
              targetOffset,
              insn.codeUnitOffset,
              insn.offsetValue);
@@ -1928,7 +2020,7 @@ bool VmHandleGoto16(VmContext &ctx, const VmpInstruction &insn) {
     int targetIndex = VmContext_FindInstructionIndexByOffset(ctx, targetOffset);
 
     if (targetIndex < 0) {
-        LOGE("GOTO_16 找不到目�?offset=%d currentOffset=%d jumpOffset=%d",
+        LOGE("GOTO_16 找不到目标 offset=%d currentOffset=%d jumpOffset=%d",
              targetOffset,
              insn.codeUnitOffset,
              insn.offsetValue);
@@ -1947,7 +2039,7 @@ bool VmHandleGoto32(VmContext &ctx, const VmpInstruction &insn) {
     int targetIndex = VmContext_FindInstructionIndexByOffset(ctx, targetOffset);
 
     if (targetIndex < 0) {
-        LOGE("GOTO_32 找不到目�?offset=%d currentOffset=%d jumpOffset=%d",
+        LOGE("GOTO_32 找不到目标 offset=%d currentOffset=%d jumpOffset=%d",
              targetOffset,
              insn.codeUnitOffset,
              insn.offsetValue);
@@ -1962,7 +2054,7 @@ bool VmHandleGoto32(VmContext &ctx, const VmpInstruction &insn) {
 //指令 PACKED_SWITCH
 bool VmHandlePackedSwitch(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("PACKED_SWITCH 寄存器数量不�?);
+        LOGE("PACKED_SWITCH 寄存器数量不足");
         return false;
     }
 
@@ -2019,7 +2111,7 @@ bool VmHandlePackedSwitch(VmContext &ctx, const VmpInstruction &insn) {
             int jumpIndex = VmContext_FindInstructionIndexByOffset(ctx, jumpOffset);
 
             if (jumpIndex < 0) {
-                LOGE("PACKED_SWITCH 跳转目标不存�?offset=%d", jumpOffset);
+                LOGE("PACKED_SWITCH 跳转目标不存在 offset=%d", jumpOffset);
                 return false;
             }
 
@@ -2035,7 +2127,7 @@ bool VmHandlePackedSwitch(VmContext &ctx, const VmpInstruction &insn) {
         }
     }
 
-    //LOGI("PACKED_SWITCH 未命�?v%d=%d", testReg, testValue);
+    //LOGI("PACKED_SWITCH 未命中 v%d=%d", testReg, testValue);
 
     ctx.pc++;
     return true;
@@ -2044,7 +2136,7 @@ bool VmHandlePackedSwitch(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SPARSE_SWITCH
 bool VmHandleSparseSwitch(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SPARSE_SWITCH 寄存器数量不�?);
+        LOGE("SPARSE_SWITCH 寄存器数量不足");
         return false;
     }
 
@@ -2101,7 +2193,7 @@ bool VmHandleSparseSwitch(VmContext &ctx, const VmpInstruction &insn) {
             int jumpIndex = VmContext_FindInstructionIndexByOffset(ctx, jumpOffset);
 
             if (jumpIndex < 0) {
-                LOGE("SPARSE_SWITCH 跳转目标不存�?offset=%d", jumpOffset);
+                LOGE("SPARSE_SWITCH 跳转目标不存在 offset=%d", jumpOffset);
                 return false;
             }
 
@@ -2117,7 +2209,7 @@ bool VmHandleSparseSwitch(VmContext &ctx, const VmpInstruction &insn) {
         }
     }
 
-    //LOGI("SPARSE_SWITCH 未命�?v%d=%d", testReg, testValue);
+    //LOGI("SPARSE_SWITCH 未命中 v%d=%d", testReg, testValue);
 
     ctx.pc++;
     return true;
@@ -2125,7 +2217,7 @@ bool VmHandleSparseSwitch(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CMPL_FLOAT
 bool VmHandleCmplFloat(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("CMPL_FLOAT 寄存器数量不�?);
+        LOGE("CMPL_FLOAT 寄存器数量不足");
         return false;
     }
 
@@ -2161,7 +2253,7 @@ bool VmHandleCmplFloat(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CMPG_FLOAT
 bool VmHandleCmpgFloat(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("CMPG_FLOAT 寄存器数量不�?);
+        LOGE("CMPG_FLOAT 寄存器数量不足");
         return false;
     }
 
@@ -2197,7 +2289,7 @@ bool VmHandleCmpgFloat(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CMPL_DOUBLE
 bool VmHandleCmplDouble(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("CMPL_DOUBLE 寄存器数量不�?);
+        LOGE("CMPL_DOUBLE 寄存器数量不足");
         return false;
     }
 
@@ -2233,7 +2325,7 @@ bool VmHandleCmplDouble(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CMPG_DOUBLE
 bool VmHandleCmpgDouble(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("CMPG_DOUBLE 寄存器数量不�?);
+        LOGE("CMPG_DOUBLE 寄存器数量不足");
         return false;
     }
 
@@ -2269,7 +2361,7 @@ bool VmHandleCmpgDouble(VmContext &ctx, const VmpInstruction &insn) {
 //指令 CMP_LONG
 bool VmHandleCmpLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("CMP_LONG 寄存器数量不�?);
+        LOGE("CMP_LONG 寄存器数量不足");
         return false;
     }
 
@@ -2302,7 +2394,7 @@ bool VmHandleCmpLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IF_EQ
 bool VmHandleIfEq(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IF_EQ 寄存器数量不�?);
+        LOGE("IF_EQ 寄存器数量不足");
         return false;
     }
 
@@ -2322,7 +2414,7 @@ bool VmHandleIfEq(VmContext &ctx, const VmpInstruction &insn) {
         int targetIndex = VmContext_FindInstructionIndexByOffset(ctx, targetOffset);
 
         if (targetIndex < 0) {
-            LOGE("IF_EQ 跳转目标不存�?offset=%d", targetOffset);
+            LOGE("IF_EQ 跳转目标不存在 offset=%d", targetOffset);
             return false;
         }
 
@@ -2332,7 +2424,7 @@ bool VmHandleIfEq(VmContext &ctx, const VmpInstruction &insn) {
         return true;
     }
 
-    //LOGI("IF_EQ 未命�?v%d=%d v%d=%d",regA,valueA,regB,valueB);
+    //LOGI("IF_EQ 未命中 v%d=%d v%d=%d",regA,valueA,regB,valueB);
 
     ctx.pc++;
     return true;
@@ -2341,7 +2433,7 @@ bool VmHandleIfEq(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IF_NE
 bool VmHandleIfNe(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IF_NE 寄存器数量不�?);
+        LOGE("IF_NE 寄存器数量不足");
         return false;
     }
 
@@ -2361,7 +2453,7 @@ bool VmHandleIfNe(VmContext &ctx, const VmpInstruction &insn) {
         int targetIndex = VmContext_FindInstructionIndexByOffset(ctx, targetOffset);
 
         if (targetIndex < 0) {
-            LOGE("IF_NE 跳转目标不存�?offset=%d", targetOffset);
+            LOGE("IF_NE 跳转目标不存在 offset=%d", targetOffset);
             return false;
         }
 
@@ -2371,7 +2463,7 @@ bool VmHandleIfNe(VmContext &ctx, const VmpInstruction &insn) {
         return true;
     }
 
-    //LOGI("IF_NE 未命�?v%d=%d v%d=%d",regA,valueA,regB,valueB);
+    //LOGI("IF_NE 未命中 v%d=%d v%d=%d",regA,valueA,regB,valueB);
 
     ctx.pc++;
     return true;
@@ -2379,7 +2471,7 @@ bool VmHandleIfNe(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IF_LT
 bool VmHandleIfLt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IF_LT 寄存器数量不�?);
+        LOGE("IF_LT 寄存器数量不足");
         return false;
     }
 
@@ -2394,7 +2486,7 @@ bool VmHandleIfLt(VmContext &ctx, const VmpInstruction &insn) {
         int jumpIndex = VmContext_FindInstructionIndexByOffset(ctx, jumpOffset);
 
         if (jumpIndex < 0) {
-            LOGE("IF_LT 跳转目标不存�?offset=%d", jumpOffset);
+            LOGE("IF_LT 跳转目标不存在 offset=%d", jumpOffset);
             return false;
         }
 
@@ -2404,7 +2496,7 @@ bool VmHandleIfLt(VmContext &ctx, const VmpInstruction &insn) {
         return true;
     }
 
-    //LOGI("IF_LT 未命�?v%d=%d v%d=%d",leftReg,leftValue,rightReg,rightValue);
+    //LOGI("IF_LT 未命中 v%d=%d v%d=%d",leftReg,leftValue,rightReg,rightValue);
 
     ctx.pc++;
     return true;
@@ -2413,7 +2505,7 @@ bool VmHandleIfLt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IF_GE
 bool VmHandleIfGe(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IF_GE 寄存器数量不�?);
+        LOGE("IF_GE 寄存器数量不足");
         return false;
     }
 
@@ -2428,7 +2520,7 @@ bool VmHandleIfGe(VmContext &ctx, const VmpInstruction &insn) {
         int jumpIndex = VmContext_FindInstructionIndexByOffset(ctx, jumpOffset);
 
         if (jumpIndex < 0) {
-            LOGE("IF_GE 跳转目标不存�?offset=%d", jumpOffset);
+            LOGE("IF_GE 跳转目标不存在 offset=%d", jumpOffset);
             return false;
         }
 
@@ -2438,7 +2530,7 @@ bool VmHandleIfGe(VmContext &ctx, const VmpInstruction &insn) {
         return true;
     }
 
-    //LOGI("IF_GE 未命�?v%d=%d v%d=%d",leftReg,leftValue,rightReg,rightValue);
+    //LOGI("IF_GE 未命中 v%d=%d v%d=%d",leftReg,leftValue,rightReg,rightValue);
 
     ctx.pc++;
     return true;
@@ -2447,7 +2539,7 @@ bool VmHandleIfGe(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IF_GT
 bool VmHandleIfGt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IF_GT 寄存器数量不�?);
+        LOGE("IF_GT 寄存器数量不足");
         return false;
     }
 
@@ -2462,7 +2554,7 @@ bool VmHandleIfGt(VmContext &ctx, const VmpInstruction &insn) {
         int jumpIndex = VmContext_FindInstructionIndexByOffset(ctx, jumpOffset);
 
         if (jumpIndex < 0) {
-            LOGE("IF_GT 跳转目标不存�?offset=%d", jumpOffset);
+            LOGE("IF_GT 跳转目标不存在 offset=%d", jumpOffset);
             return false;
         }
 
@@ -2472,7 +2564,7 @@ bool VmHandleIfGt(VmContext &ctx, const VmpInstruction &insn) {
         return true;
     }
 
-    //LOGI("IF_GT 未命�?v%d=%d v%d=%d",leftReg,leftValue,rightReg,rightValue);
+    //LOGI("IF_GT 未命中 v%d=%d v%d=%d",leftReg,leftValue,rightReg,rightValue);
 
     ctx.pc++;
     return true;
@@ -2480,7 +2572,7 @@ bool VmHandleIfGt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IF_LE
 bool VmHandleIfLe(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IF_LE 寄存器数量不�?);
+        LOGE("IF_LE 寄存器数量不足");
         return false;
     }
 
@@ -2495,7 +2587,7 @@ bool VmHandleIfLe(VmContext &ctx, const VmpInstruction &insn) {
         int targetIndex = VmContext_FindInstructionIndexByOffset(ctx, targetOffset);
 
         if (targetIndex < 0) {
-            LOGE("IF_LE 跳转目标不存�?offset=%d", targetOffset);
+            LOGE("IF_LE 跳转目标不存在 offset=%d", targetOffset);
             return false;
         }
 
@@ -2505,7 +2597,7 @@ bool VmHandleIfLe(VmContext &ctx, const VmpInstruction &insn) {
         return true;
     }
 
-    //LOGI("IF_LE 未命�?v%d=%d > v%d=%d",regA,valueA,regB,valueB);
+    //LOGI("IF_LE 未命中 v%d=%d > v%d=%d",regA,valueA,regB,valueB);
 
     ctx.pc++;
     return true;
@@ -2514,7 +2606,7 @@ bool VmHandleIfLe(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IF_EQZ
 bool VmHandleIfEqz(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("IF_EQZ 寄存器数量不�?);
+        LOGE("IF_EQZ 寄存器数量不足");
         return false;
     }
 
@@ -2537,7 +2629,7 @@ bool VmHandleIfEqz(VmContext &ctx, const VmpInstruction &insn) {
         int targetIndex = VmContext_FindInstructionIndexByOffset(ctx, targetOffset);
 
         if (targetIndex < 0) {
-            LOGE("IF_EQZ 跳转目标不存�?offset=%d", targetOffset);
+            LOGE("IF_EQZ 跳转目标不存在 offset=%d", targetOffset);
             return false;
         }
 
@@ -2547,7 +2639,7 @@ bool VmHandleIfEqz(VmContext &ctx, const VmpInstruction &insn) {
         return true;
     }
 
-    //LOGI("IF_EQZ 未命�?v%d kind=%d int=%d object=%p",regA,static_cast<int>(kind),intValue,objectValue);
+    //LOGI("IF_EQZ 未命中 v%d kind=%d int=%d object=%p",regA,static_cast<int>(kind),intValue,objectValue);
 
     ctx.pc++;
     return true;
@@ -2556,7 +2648,7 @@ bool VmHandleIfEqz(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IF_NEZ
 bool VmHandleIfNez(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("IF_NEZ 寄存器数量不�?);
+        LOGE("IF_NEZ 寄存器数量不足");
         return false;
     }
 
@@ -2570,7 +2662,7 @@ bool VmHandleIfNez(VmContext &ctx, const VmpInstruction &insn) {
         int targetIndex = VmContext_FindInstructionIndexByOffset(ctx, targetOffset);
 
         if (targetIndex < 0) {
-            LOGE("IF_NEZ 跳转目标不存�?offset=%d", targetOffset);
+            LOGE("IF_NEZ 跳转目标不存在 offset=%d", targetOffset);
             return false;
         }
 
@@ -2580,7 +2672,7 @@ bool VmHandleIfNez(VmContext &ctx, const VmpInstruction &insn) {
         return true;
     }
 
-    //LOGI("IF_NEZ 未命�?v%d int=%d object=%p",regA,intValue,objectValue);
+    //LOGI("IF_NEZ 未命中 v%d int=%d object=%p",regA,intValue,objectValue);
 
     ctx.pc++;
     return true;
@@ -2588,7 +2680,7 @@ bool VmHandleIfNez(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IF_LTZ
 bool VmHandleIfLtz(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("IF_LTZ 寄存器数量不�?);
+        LOGE("IF_LTZ 寄存器数量不足");
         return false;
     }
 
@@ -2600,7 +2692,7 @@ bool VmHandleIfLtz(VmContext &ctx, const VmpInstruction &insn) {
         int targetIndex = VmContext_FindInstructionIndexByOffset(ctx, targetOffset);
 
         if (targetIndex < 0) {
-            LOGE("IF_LTZ 跳转目标不存�?offset=%d", targetOffset);
+            LOGE("IF_LTZ 跳转目标不存在 offset=%d", targetOffset);
             return false;
         }
 
@@ -2610,7 +2702,7 @@ bool VmHandleIfLtz(VmContext &ctx, const VmpInstruction &insn) {
         return true;
     }
 
-    //LOGI("IF_LTZ 未命�?v%d=%d", reg, value);
+    //LOGI("IF_LTZ 未命中 v%d=%d", reg, value);
 
     ctx.pc++;
     return true;
@@ -2619,7 +2711,7 @@ bool VmHandleIfLtz(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IF_GEZ
 bool VmHandleIfGez(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("IF_GEZ 寄存器数量不�?);
+        LOGE("IF_GEZ 寄存器数量不足");
         return false;
     }
 
@@ -2631,7 +2723,7 @@ bool VmHandleIfGez(VmContext &ctx, const VmpInstruction &insn) {
         int targetIndex = VmContext_FindInstructionIndexByOffset(ctx, targetOffset);
 
         if (targetIndex < 0) {
-            LOGE("IF_GEZ 跳转目标不存�?offset=%d", targetOffset);
+            LOGE("IF_GEZ 跳转目标不存在 offset=%d", targetOffset);
             return false;
         }
 
@@ -2641,7 +2733,7 @@ bool VmHandleIfGez(VmContext &ctx, const VmpInstruction &insn) {
         return true;
     }
 
-    //LOGI("IF_GEZ 未命�?v%d=%d", reg, value);
+    //LOGI("IF_GEZ 未命中 v%d=%d", reg, value);
 
     ctx.pc++;
     return true;
@@ -2650,7 +2742,7 @@ bool VmHandleIfGez(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IF_GTZ
 bool VmHandleIfGtz(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("IF_GTZ 寄存器数量不�?);
+        LOGE("IF_GTZ 寄存器数量不足");
         return false;
     }
 
@@ -2662,7 +2754,7 @@ bool VmHandleIfGtz(VmContext &ctx, const VmpInstruction &insn) {
         int targetIndex = VmContext_FindInstructionIndexByOffset(ctx, targetOffset);
 
         if (targetIndex < 0) {
-            LOGE("IF_GTZ 跳转目标不存�?offset=%d", targetOffset);
+            LOGE("IF_GTZ 跳转目标不存在 offset=%d", targetOffset);
             return false;
         }
 
@@ -2672,7 +2764,7 @@ bool VmHandleIfGtz(VmContext &ctx, const VmpInstruction &insn) {
         return true;
     }
 
-    //LOGI("IF_GTZ 未命�?v%d=%d", reg, value);
+    //LOGI("IF_GTZ 未命中 v%d=%d", reg, value);
 
     ctx.pc++;
     return true;
@@ -2681,7 +2773,7 @@ bool VmHandleIfGtz(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IF_LEZ
 bool VmHandleIfLez(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("IF_LEZ 寄存器数量不�?);
+        LOGE("IF_LEZ 寄存器数量不足");
         return false;
     }
 
@@ -2693,7 +2785,7 @@ bool VmHandleIfLez(VmContext &ctx, const VmpInstruction &insn) {
         int targetIndex = VmContext_FindInstructionIndexByOffset(ctx, targetOffset);
 
         if (targetIndex < 0) {
-            LOGE("IF_LEZ 跳转目标不存�?offset=%d", targetOffset);
+            LOGE("IF_LEZ 跳转目标不存在 offset=%d", targetOffset);
             return false;
         }
 
@@ -2703,7 +2795,7 @@ bool VmHandleIfLez(VmContext &ctx, const VmpInstruction &insn) {
         return true;
     }
 
-    //LOGI("IF_LEZ 未命�?v%d=%d", reg, value);
+    //LOGI("IF_LEZ 未命中 v%d=%d", reg, value);
 
     ctx.pc++;
     return true;
@@ -2764,7 +2856,7 @@ bool VmHandleUnused43(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AGET
 bool VmHandleAget(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("AGET 寄存器数量不�?);
+        LOGE("AGET 寄存器数量不足");
         return false;
     }
 
@@ -2807,7 +2899,7 @@ bool VmHandleAget(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AGET_WIDE
 bool VmHandleAgetWide(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("AGET_WIDE 寄存器数量不�?);
+        LOGE("AGET_WIDE 寄存器数量不足");
         return false;
     }
 
@@ -2850,7 +2942,7 @@ bool VmHandleAgetWide(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AGET_OBJECT
 bool VmHandleAgetObject(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("AGET_OBJECT 寄存器数量不�?);
+        LOGE("AGET_OBJECT 寄存器数量不足");
         return false;
     }
 
@@ -2889,7 +2981,7 @@ bool VmHandleAgetObject(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AGET_BOOLEAN
 bool VmHandleAgetBoolean(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("AGET_BOOLEAN 寄存器数量不�?);
+        LOGE("AGET_BOOLEAN 寄存器数量不足");
         return false;
     }
 
@@ -2933,7 +3025,7 @@ bool VmHandleAgetBoolean(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AGET_BYTE
 bool VmHandleAgetByte(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("AGET_BYTE 寄存器数量不�?);
+        LOGE("AGET_BYTE 寄存器数量不足");
         return false;
     }
 
@@ -2977,7 +3069,7 @@ bool VmHandleAgetByte(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AGET_CHAR
 bool VmHandleAgetChar(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("AGET_CHAR 寄存器数量不�?);
+        LOGE("AGET_CHAR 寄存器数量不足");
         return false;
     }
 
@@ -3021,7 +3113,7 @@ bool VmHandleAgetChar(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AGET_SHORT
 bool VmHandleAgetShort(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("AGET_SHORT 寄存器数量不�?);
+        LOGE("AGET_SHORT 寄存器数量不足");
         return false;
     }
 
@@ -3066,7 +3158,7 @@ bool VmHandleAgetShort(VmContext &ctx, const VmpInstruction &insn) {
 //指令 APUT
 bool VmHandleAput(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("APUT 寄存器数量不�?);
+        LOGE("APUT 寄存器数量不足");
         return false;
     }
 
@@ -3122,7 +3214,7 @@ bool VmHandleAput(VmContext &ctx, const VmpInstruction &insn) {
 //指令 APUT_WIDE
 bool VmHandleAputWide(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("APUT_WIDE 寄存器数量不�?);
+        LOGE("APUT_WIDE 寄存器数量不足");
         return false;
     }
 
@@ -3178,7 +3270,7 @@ bool VmHandleAputWide(VmContext &ctx, const VmpInstruction &insn) {
 //指令 APUT_OBJECT
 bool VmHandleAputObject(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("APUT_OBJECT 寄存器数量不�?);
+        LOGE("APUT_OBJECT 寄存器数量不足");
         return false;
     }
 
@@ -3212,7 +3304,7 @@ bool VmHandleAputObject(VmContext &ctx, const VmpInstruction &insn) {
 //指令 APUT_BOOLEAN
 bool VmHandleAputBoolean(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("APUT_BOOLEAN 寄存器数量不�?);
+        LOGE("APUT_BOOLEAN 寄存器数量不足");
         return false;
     }
 
@@ -3251,7 +3343,7 @@ bool VmHandleAputBoolean(VmContext &ctx, const VmpInstruction &insn) {
 //指令 APUT_BYTE
 bool VmHandleAputByte(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("APUT_BYTE 寄存器数量不�?);
+        LOGE("APUT_BYTE 寄存器数量不足");
         return false;
     }
 
@@ -3290,7 +3382,7 @@ bool VmHandleAputByte(VmContext &ctx, const VmpInstruction &insn) {
 //指令 APUT_CHAR
 bool VmHandleAputChar(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("APUT_CHAR 寄存器数量不�?);
+        LOGE("APUT_CHAR 寄存器数量不足");
         return false;
     }
 
@@ -3328,7 +3420,7 @@ bool VmHandleAputChar(VmContext &ctx, const VmpInstruction &insn) {
 //指令 APUT_SHORT
 bool VmHandleAputShort(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("APUT_SHORT 寄存器数量不�?);
+        LOGE("APUT_SHORT 寄存器数量不足");
         return false;
     }
 
@@ -3367,7 +3459,7 @@ bool VmHandleAputShort(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IGET
 bool VmHandleIget(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IGET 寄存器数量不�?);
+        LOGE("IGET 寄存器数量不足");
         return false;
     }
 
@@ -3379,7 +3471,7 @@ bool VmHandleIget(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IGET 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IGET 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3392,7 +3484,7 @@ bool VmHandleIget(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IGET 找不到类�?s", classType.c_str());
+        LOGE("IGET 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -3439,13 +3531,13 @@ bool VmHandleIget(VmContext &ctx, const VmpInstruction &insn) {
         ctx.regs[dst].intValue = value;
         ctx.regs[dst].longValue = value;
     } else {
-        LOGE("IGET 不支持的字段类型�?s", fieldType.c_str());
+        LOGE("IGET 不支持的字段类型：%s", fieldType.c_str());
         return false;
     }
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IGET 读取字段失败�?s", insn.referenceData.c_str());
+        LOGE("IGET 读取字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3460,7 +3552,7 @@ bool VmHandleIget(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IGET_WIDE
 bool VmHandleIgetWide(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IGET_WIDE 寄存器数量不�?);
+        LOGE("IGET_WIDE 寄存器数量不足");
         return false;
     }
 
@@ -3472,7 +3564,7 @@ bool VmHandleIgetWide(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IGET_WIDE 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IGET_WIDE 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3485,7 +3577,7 @@ bool VmHandleIgetWide(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IGET_WIDE 找不到类�?s", classType.c_str());
+        LOGE("IGET_WIDE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -3516,13 +3608,13 @@ bool VmHandleIgetWide(VmContext &ctx, const VmpInstruction &insn) {
         ctx.regs[dst].longValue = bits;
         ctx.regs[dst].intValue = static_cast<jint>(bits);
     } else {
-        LOGE("IGET_WIDE 不支持的字段类型�?s", fieldType.c_str());
+        LOGE("IGET_WIDE 不支持的字段类型：%s", fieldType.c_str());
         return false;
     }
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IGET_WIDE 读取字段失败�?s", insn.referenceData.c_str());
+        LOGE("IGET_WIDE 读取字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3540,7 +3632,7 @@ bool VmHandleIgetWide(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IGET_OBJECT
 bool VmHandleIgetObject(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IGET_OBJECT 寄存器数量不�?);
+        LOGE("IGET_OBJECT 寄存器数量不足");
         return false;
     }
 
@@ -3552,7 +3644,7 @@ bool VmHandleIgetObject(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IGET_OBJECT 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IGET_OBJECT 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3565,7 +3657,7 @@ bool VmHandleIgetObject(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IGET_OBJECT 找不到类�?s", classType.c_str());
+        LOGE("IGET_OBJECT 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -3588,7 +3680,7 @@ bool VmHandleIgetObject(VmContext &ctx, const VmpInstruction &insn) {
     jobject value = ctx.env->GetObjectField(obj, fieldId);
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IGET_OBJECT 读取字段失败�?s", insn.referenceData.c_str());
+        LOGE("IGET_OBJECT 读取字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3602,7 +3694,7 @@ bool VmHandleIgetObject(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IGET_BOOLEAN
 bool VmHandleIgetBoolean(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IGET_BOOLEAN 寄存器数量不�?);
+        LOGE("IGET_BOOLEAN 寄存器数量不足");
         return false;
     }
 
@@ -3614,7 +3706,7 @@ bool VmHandleIgetBoolean(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IGET_BOOLEAN 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IGET_BOOLEAN 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3627,7 +3719,7 @@ bool VmHandleIgetBoolean(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IGET_BOOLEAN 找不到类�?s", classType.c_str());
+        LOGE("IGET_BOOLEAN 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -3650,7 +3742,7 @@ bool VmHandleIgetBoolean(VmContext &ctx, const VmpInstruction &insn) {
     jboolean value = ctx.env->GetBooleanField(obj, fieldId);
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IGET_BOOLEAN 读取字段失败�?s", insn.referenceData.c_str());
+        LOGE("IGET_BOOLEAN 读取字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3667,7 +3759,7 @@ bool VmHandleIgetBoolean(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IGET_BYTE
 bool VmHandleIgetByte(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IGET_BYTE 寄存器数量不�?);
+        LOGE("IGET_BYTE 寄存器数量不足");
         return false;
     }
 
@@ -3679,7 +3771,7 @@ bool VmHandleIgetByte(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IGET_BYTE 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IGET_BYTE 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3692,7 +3784,7 @@ bool VmHandleIgetByte(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IGET_BYTE 找不到类�?s", classType.c_str());
+        LOGE("IGET_BYTE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -3715,7 +3807,7 @@ bool VmHandleIgetByte(VmContext &ctx, const VmpInstruction &insn) {
     jbyte value = ctx.env->GetByteField(obj, fieldId);
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IGET_BYTE 读取字段失败�?s", insn.referenceData.c_str());
+        LOGE("IGET_BYTE 读取字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3732,7 +3824,7 @@ bool VmHandleIgetByte(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IGET_CHAR
 bool VmHandleIgetChar(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IGET_CHAR 寄存器数量不�?);
+        LOGE("IGET_CHAR 寄存器数量不足");
         return false;
     }
 
@@ -3744,7 +3836,7 @@ bool VmHandleIgetChar(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IGET_CHAR 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IGET_CHAR 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3757,7 +3849,7 @@ bool VmHandleIgetChar(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IGET_CHAR 找不到类�?s", classType.c_str());
+        LOGE("IGET_CHAR 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -3780,7 +3872,7 @@ bool VmHandleIgetChar(VmContext &ctx, const VmpInstruction &insn) {
     jchar value = ctx.env->GetCharField(obj, fieldId);
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IGET_CHAR 读取字段失败�?s", insn.referenceData.c_str());
+        LOGE("IGET_CHAR 读取字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3797,7 +3889,7 @@ bool VmHandleIgetChar(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IGET_SHORT
 bool VmHandleIgetShort(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IGET_SHORT 寄存器数量不�?);
+        LOGE("IGET_SHORT 寄存器数量不足");
         return false;
     }
 
@@ -3809,7 +3901,7 @@ bool VmHandleIgetShort(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IGET_SHORT 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IGET_SHORT 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3822,7 +3914,7 @@ bool VmHandleIgetShort(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IGET_SHORT 找不到类�?s", classType.c_str());
+        LOGE("IGET_SHORT 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -3845,7 +3937,7 @@ bool VmHandleIgetShort(VmContext &ctx, const VmpInstruction &insn) {
     jshort value = ctx.env->GetShortField(obj, fieldId);
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IGET_SHORT 读取字段失败�?s", insn.referenceData.c_str());
+        LOGE("IGET_SHORT 读取字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3861,7 +3953,7 @@ bool VmHandleIgetShort(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IPUT
 bool VmHandleIput(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IPUT 寄存器数量不�?);
+        LOGE("IPUT 寄存器数量不足");
         return false;
     }
 
@@ -3873,7 +3965,7 @@ bool VmHandleIput(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IPUT 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3886,7 +3978,7 @@ bool VmHandleIput(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IPUT 找不到类�?s", classType.c_str());
+        LOGE("IPUT 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -3923,13 +4015,13 @@ bool VmHandleIput(VmContext &ctx, const VmpInstruction &insn) {
         memcpy(&floatValue, &value, sizeof(jfloat));
         ctx.env->SetFloatField(obj, fieldId, floatValue);
     } else {
-        LOGE("IPUT 不支持的字段类型�?s", fieldType.c_str());
+        LOGE("IPUT 不支持的字段类型：%s", fieldType.c_str());
         return false;
     }
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IPUT 写入字段失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT 写入字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3942,7 +4034,7 @@ bool VmHandleIput(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IPUT_WIDE
 bool VmHandleIputWide(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IPUT_WIDE 寄存器数量不�?);
+        LOGE("IPUT_WIDE 寄存器数量不足");
         return false;
     }
 
@@ -3954,7 +4046,7 @@ bool VmHandleIputWide(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IPUT_WIDE 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT_WIDE 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -3967,7 +4059,7 @@ bool VmHandleIputWide(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IPUT_WIDE 找不到类�?s", classType.c_str());
+        LOGE("IPUT_WIDE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -3996,13 +4088,13 @@ bool VmHandleIputWide(VmContext &ctx, const VmpInstruction &insn) {
         memcpy(&doubleValue, &value, sizeof(jdouble));
         ctx.env->SetDoubleField(obj, fieldId, doubleValue);
     } else {
-        LOGE("IPUT_WIDE 不支持的字段类型�?s", fieldType.c_str());
+        LOGE("IPUT_WIDE 不支持的字段类型：%s", fieldType.c_str());
         return false;
     }
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IPUT_WIDE 写入字段失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT_WIDE 写入字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4015,7 +4107,7 @@ bool VmHandleIputWide(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IPUT_OBJECT
 bool VmHandleIputObject(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IPUT_OBJECT 寄存器数量不�?);
+        LOGE("IPUT_OBJECT 寄存器数量不足");
         return false;
     }
 
@@ -4027,7 +4119,7 @@ bool VmHandleIputObject(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IPUT_OBJECT 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT_OBJECT 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4040,7 +4132,7 @@ bool VmHandleIputObject(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IPUT_OBJECT 找不到类�?s", classType.c_str());
+        LOGE("IPUT_OBJECT 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4066,7 +4158,7 @@ bool VmHandleIputObject(VmContext &ctx, const VmpInstruction &insn) {
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IPUT_OBJECT 写入字段失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT_OBJECT 写入字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4078,7 +4170,7 @@ bool VmHandleIputObject(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IPUT_BOOLEAN
 bool VmHandleIputBoolean(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IPUT_BOOLEAN 寄存器数量不�?);
+        LOGE("IPUT_BOOLEAN 寄存器数量不足");
         return false;
     }
 
@@ -4090,7 +4182,7 @@ bool VmHandleIputBoolean(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IPUT_BOOLEAN 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT_BOOLEAN 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4103,7 +4195,7 @@ bool VmHandleIputBoolean(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IPUT_BOOLEAN 找不到类�?s", classType.c_str());
+        LOGE("IPUT_BOOLEAN 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4128,7 +4220,7 @@ bool VmHandleIputBoolean(VmContext &ctx, const VmpInstruction &insn) {
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IPUT_BOOLEAN 写入字段失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT_BOOLEAN 写入字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4141,7 +4233,7 @@ bool VmHandleIputBoolean(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IPUT_BYTE
 bool VmHandleIputByte(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IPUT_BYTE 寄存器数量不�?);
+        LOGE("IPUT_BYTE 寄存器数量不足");
         return false;
     }
 
@@ -4153,7 +4245,7 @@ bool VmHandleIputByte(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IPUT_BYTE 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT_BYTE 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4166,7 +4258,7 @@ bool VmHandleIputByte(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IPUT_BYTE 找不到类�?s", classType.c_str());
+        LOGE("IPUT_BYTE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4191,7 +4283,7 @@ bool VmHandleIputByte(VmContext &ctx, const VmpInstruction &insn) {
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IPUT_BYTE 写入字段失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT_BYTE 写入字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4204,7 +4296,7 @@ bool VmHandleIputByte(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IPUT_CHAR
 bool VmHandleIputChar(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IPUT_CHAR 寄存器数量不�?);
+        LOGE("IPUT_CHAR 寄存器数量不足");
         return false;
     }
 
@@ -4216,7 +4308,7 @@ bool VmHandleIputChar(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IPUT_CHAR 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT_CHAR 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4229,7 +4321,7 @@ bool VmHandleIputChar(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IPUT_CHAR 找不到类�?s", classType.c_str());
+        LOGE("IPUT_CHAR 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4254,7 +4346,7 @@ bool VmHandleIputChar(VmContext &ctx, const VmpInstruction &insn) {
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IPUT_CHAR 写入字段失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT_CHAR 写入字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4267,7 +4359,7 @@ bool VmHandleIputChar(VmContext &ctx, const VmpInstruction &insn) {
 //指令 IPUT_SHORT
 bool VmHandleIputShort(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("IPUT_SHORT 寄存器数量不�?);
+        LOGE("IPUT_SHORT 寄存器数量不足");
         return false;
     }
 
@@ -4279,7 +4371,7 @@ bool VmHandleIputShort(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("IPUT_SHORT 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT_SHORT 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4292,7 +4384,7 @@ bool VmHandleIputShort(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("IPUT_SHORT 找不到类�?s", classType.c_str());
+        LOGE("IPUT_SHORT 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4317,7 +4409,7 @@ bool VmHandleIputShort(VmContext &ctx, const VmpInstruction &insn) {
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("IPUT_SHORT 写入字段失败�?s", insn.referenceData.c_str());
+        LOGE("IPUT_SHORT 写入字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4329,7 +4421,7 @@ bool VmHandleIputShort(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SGET
 bool VmHandleSget(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SGET 寄存器数量不�?);
+        LOGE("SGET 寄存器数量不足");
         return false;
     }
 
@@ -4340,14 +4432,14 @@ bool VmHandleSget(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SGET 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SGET 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
 
     if (cls == nullptr) {
-        LOGE("SGET 找不到类�?s", classType.c_str());
+        LOGE("SGET 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4378,7 +4470,7 @@ bool VmHandleSget(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SGET_WIDE
 bool VmHandleSgetWide(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SGET_WIDE 寄存器数量不�?);
+        LOGE("SGET_WIDE 寄存器数量不足");
         return false;
     }
 
@@ -4389,13 +4481,13 @@ bool VmHandleSgetWide(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SGET_WIDE 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SGET_WIDE 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
     if (cls == nullptr) {
-        LOGE("SGET_WIDE 找不到类�?s", classType.c_str());
+        LOGE("SGET_WIDE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4442,7 +4534,7 @@ bool VmHandleSgetWide(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SGET_OBJECT
 bool VmHandleSgetObject(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SGET_OBJECT 寄存器数量不�?);
+        LOGE("SGET_OBJECT 寄存器数量不足");
         return false;
     }
 
@@ -4453,14 +4545,14 @@ bool VmHandleSgetObject(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SGET_OBJECT 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SGET_OBJECT 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
 
     if (cls == nullptr) {
-        LOGE("SGET_OBJECT 找不到类�?s", classType.c_str());
+        LOGE("SGET_OBJECT 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4491,7 +4583,7 @@ bool VmHandleSgetObject(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SGET_BOOLEAN
 bool VmHandleSgetBoolean(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SGET_BOOLEAN 寄存器数量不�?);
+        LOGE("SGET_BOOLEAN 寄存器数量不足");
         return false;
     }
 
@@ -4502,13 +4594,13 @@ bool VmHandleSgetBoolean(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SGET_BOOLEAN 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SGET_BOOLEAN 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
     if (cls == nullptr) {
-        LOGE("SGET_BOOLEAN 找不到类�?s", classType.c_str());
+        LOGE("SGET_BOOLEAN 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4538,7 +4630,7 @@ bool VmHandleSgetBoolean(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SGET_BYTE
 bool VmHandleSgetByte(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SGET_BYTE 寄存器数量不�?);
+        LOGE("SGET_BYTE 寄存器数量不足");
         return false;
     }
 
@@ -4549,13 +4641,13 @@ bool VmHandleSgetByte(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SGET_BYTE 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SGET_BYTE 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
     if (cls == nullptr) {
-        LOGE("SGET_BYTE 找不到类�?s", classType.c_str());
+        LOGE("SGET_BYTE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4586,7 +4678,7 @@ bool VmHandleSgetByte(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SGET_CHAR
 bool VmHandleSgetChar(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SGET_CHAR 寄存器数量不�?);
+        LOGE("SGET_CHAR 寄存器数量不足");
         return false;
     }
 
@@ -4597,13 +4689,13 @@ bool VmHandleSgetChar(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SGET_CHAR 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SGET_CHAR 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
     if (cls == nullptr) {
-        LOGE("SGET_CHAR 找不到类�?s", classType.c_str());
+        LOGE("SGET_CHAR 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4634,7 +4726,7 @@ bool VmHandleSgetChar(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SGET_SHORT
 bool VmHandleSgetShort(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SGET_SHORT 寄存器数量不�?);
+        LOGE("SGET_SHORT 寄存器数量不足");
         return false;
     }
 
@@ -4645,13 +4737,13 @@ bool VmHandleSgetShort(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SGET_SHORT 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SGET_SHORT 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
     if (cls == nullptr) {
-        LOGE("SGET_SHORT 找不到类�?s", classType.c_str());
+        LOGE("SGET_SHORT 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4682,7 +4774,7 @@ bool VmHandleSgetShort(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SPUT
 bool VmHandleSput(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SPUT 寄存器数量不�?);
+        LOGE("SPUT 寄存器数量不足");
         return false;
     }
 
@@ -4693,13 +4785,13 @@ bool VmHandleSput(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SPUT 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SPUT 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
     if (cls == nullptr) {
-        LOGE("SPUT 找不到类�?s", classType.c_str());
+        LOGE("SPUT 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4734,7 +4826,7 @@ bool VmHandleSput(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SPUT_WIDE
 bool VmHandleSputWide(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SPUT_WIDE 寄存器数量不�?);
+        LOGE("SPUT_WIDE 寄存器数量不足");
         return false;
     }
 
@@ -4745,13 +4837,13 @@ bool VmHandleSputWide(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SPUT_WIDE 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SPUT_WIDE 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
     if (cls == nullptr) {
-        LOGE("SPUT_WIDE 找不到类�?s", classType.c_str());
+        LOGE("SPUT_WIDE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4770,13 +4862,13 @@ bool VmHandleSputWide(VmContext &ctx, const VmpInstruction &insn) {
         memcpy(&value, &bits, sizeof(jdouble));
         ctx.env->SetStaticDoubleField(cls, fieldId, value);
     } else {
-        LOGE("SPUT_WIDE 不支持的字段类型�?s", fieldType.c_str());
+        LOGE("SPUT_WIDE 不支持的字段类型：%s", fieldType.c_str());
         return false;
     }
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("SPUT_WIDE 写入字段失败�?s", insn.referenceData.c_str());
+        LOGE("SPUT_WIDE 写入字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4790,7 +4882,7 @@ bool VmHandleSputWide(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SPUT_OBJECT
 bool VmHandleSputObject(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SPUT_OBJECT 寄存器数量不�?);
+        LOGE("SPUT_OBJECT 寄存器数量不足");
         return false;
     }
 
@@ -4801,7 +4893,7 @@ bool VmHandleSputObject(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SPUT_OBJECT 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SPUT_OBJECT 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4818,11 +4910,11 @@ bool VmHandleSputObject(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForStatic(ctx.env, classType);
 
     if (cls == nullptr && loaderBaseObj != nullptr) {
-        cls = findClassByType(ctx.env, loaderBaseObj, classType);
+        cls = findClassByTypeWithObjectLoader(ctx.env, loaderBaseObj, classType);
     }
 
     if (cls == nullptr) {
-        LOGE("SPUT_OBJECT 找不到类�?s", classType.c_str());
+        LOGE("SPUT_OBJECT 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4837,7 +4929,7 @@ bool VmHandleSputObject(VmContext &ctx, const VmpInstruction &insn) {
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("SPUT_OBJECT 写入字段失败�?s", insn.referenceData.c_str());
+        LOGE("SPUT_OBJECT 写入字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4850,7 +4942,7 @@ bool VmHandleSputObject(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SPUT_BOOLEAN
 bool VmHandleSputBoolean(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SPUT_BOOLEAN 寄存器数量不�?);
+        LOGE("SPUT_BOOLEAN 寄存器数量不足");
         return false;
     }
 
@@ -4861,7 +4953,7 @@ bool VmHandleSputBoolean(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SPUT_BOOLEAN 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SPUT_BOOLEAN 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4872,7 +4964,7 @@ bool VmHandleSputBoolean(VmContext &ctx, const VmpInstruction &insn) {
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
     if (cls == nullptr) {
-        LOGE("SPUT_BOOLEAN 找不到类�?s", classType.c_str());
+        LOGE("SPUT_BOOLEAN 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4888,7 +4980,7 @@ bool VmHandleSputBoolean(VmContext &ctx, const VmpInstruction &insn) {
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("SPUT_BOOLEAN 写入字段失败�?s", insn.referenceData.c_str());
+        LOGE("SPUT_BOOLEAN 写入字段失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -4900,7 +4992,7 @@ bool VmHandleSputBoolean(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SPUT_BYTE
 bool VmHandleSputByte(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SPUT_BYTE 寄存器数量不�?);
+        LOGE("SPUT_BYTE 寄存器数量不足");
         return false;
     }
 
@@ -4911,13 +5003,13 @@ bool VmHandleSputByte(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SPUT_BYTE 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SPUT_BYTE 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
     if (cls == nullptr) {
-        LOGE("SPUT_BYTE 找不到类�?s", classType.c_str());
+        LOGE("SPUT_BYTE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4946,7 +5038,7 @@ bool VmHandleSputByte(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SPUT_CHAR
 bool VmHandleSputChar(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SPUT_CHAR 寄存器数量不�?);
+        LOGE("SPUT_CHAR 寄存器数量不足");
         return false;
     }
 
@@ -4957,13 +5049,13 @@ bool VmHandleSputChar(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SPUT_CHAR 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SPUT_CHAR 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
     if (cls == nullptr) {
-        LOGE("SPUT_CHAR 找不到类�?s", classType.c_str());
+        LOGE("SPUT_CHAR 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -4992,7 +5084,7 @@ bool VmHandleSputChar(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SPUT_SHORT
 bool VmHandleSputShort(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("SPUT_SHORT 寄存器数量不�?);
+        LOGE("SPUT_SHORT 寄存器数量不足");
         return false;
     }
 
@@ -5003,13 +5095,13 @@ bool VmHandleSputShort(VmContext &ctx, const VmpInstruction &insn) {
     std::string fieldType;
 
     if (!parseFieldReference(insn.referenceData, classType, fieldName, fieldType)) {
-        LOGE("SPUT_SHORT 字段引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("SPUT_SHORT 字段引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
     if (cls == nullptr) {
-        LOGE("SPUT_SHORT 找不到类�?s", classType.c_str());
+        LOGE("SPUT_SHORT 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -5044,12 +5136,12 @@ bool VmHandleInvokeCommon(VmContext &ctx, const VmpInstruction &insn) {
     std::string signature;
 
     if (!parseMethodReference(insn.referenceData, classType, methodName, signature)) {
-        LOGE("INVOKE 方法引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE 方法引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     if (insn.registers.empty()) {
-        LOGE("INVOKE 寄存器为�?);
+        LOGE("INVOKE 寄存器为空");
         return false;
     }
 
@@ -5064,7 +5156,7 @@ bool VmHandleInvokeCommon(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("INVOKE 找不到类�?s", classType.c_str());
+        LOGE("INVOKE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -5144,7 +5236,7 @@ bool VmHandleInvokeCommon(VmContext &ctx, const VmpInstruction &insn) {
     if (ctx.env->ExceptionCheck()) {
         ctx.currentException = ctx.env->ExceptionOccurred();
 
-        LOGE("INVOKE 调用失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE 调用失败：%s", insn.referenceData.c_str());
         logAndClearJavaException(ctx.env, "INVOKE");
         if (VmContext_JumpToExceptionHandler(ctx, insn.codeUnitOffset)) {
             return true;
@@ -5153,9 +5245,9 @@ bool VmHandleInvokeCommon(VmContext &ctx, const VmpInstruction &insn) {
     }
 
     if (!ctx.lastResultObject && returnType != "V") {
-        //LOGI("INVOKE 调用完成�?s returnType=%s intResult=%d longResult=%lld",insn.referenceData.c_str(),returnType.c_str(),ctx.lastResultInt,static_cast<long long>(ctx.lastResultLong));
+        //LOGI("INVOKE 调用完成：%s returnType=%s intResult=%d longResult=%lld",insn.referenceData.c_str(),returnType.c_str(),ctx.lastResultInt,static_cast<long long>(ctx.lastResultLong));
     } else {
-        //LOGI("INVOKE 调用完成�?s returnType=%s objectResult=%p objectText=%s",insn.referenceData.c_str(),returnType.c_str(),ctx.lastResultObject,jstringToDebugString(ctx.env, ctx.lastResultObject).c_str());
+        //LOGI("INVOKE 调用完成：%s returnType=%s objectResult=%p objectText=%s",insn.referenceData.c_str(),returnType.c_str(),ctx.lastResultObject,jstringToDebugString(ctx.env, ctx.lastResultObject).c_str());
     }
 
     ctx.pc++;
@@ -5169,12 +5261,12 @@ bool VmHandleInvokeDirect(VmContext &ctx, const VmpInstruction &insn) {
     std::string signature;
 
     if (!parseMethodReference(insn.referenceData, classType, methodName, signature)) {
-        LOGE("INVOKE_DIRECT 方法引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_DIRECT 方法引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     if (insn.registers.empty()) {
-        LOGE("INVOKE_DIRECT 寄存器为�?);
+        LOGE("INVOKE_DIRECT 寄存器为空");
         return false;
     }
 
@@ -5188,7 +5280,7 @@ bool VmHandleInvokeDirect(VmContext &ctx, const VmpInstruction &insn) {
 
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
     if (cls == nullptr) {
-        LOGE("INVOKE_DIRECT 找不到类�?s", classType.c_str());
+        LOGE("INVOKE_DIRECT 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -5276,7 +5368,7 @@ bool VmHandleInvokeDirect(VmContext &ctx, const VmpInstruction &insn) {
     if (ctx.env->ExceptionCheck()) {
         ctx.currentException = ctx.env->ExceptionOccurred();
 
-        LOGE("INVOKE_DIRECT 调用失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_DIRECT 调用失败：%s", insn.referenceData.c_str());
         logAndClearJavaException(ctx.env, "INVOKE_DIRECT");
 
         if (VmContext_JumpToExceptionHandler(ctx, insn.codeUnitOffset)) {
@@ -5286,7 +5378,7 @@ bool VmHandleInvokeDirect(VmContext &ctx, const VmpInstruction &insn) {
         return false;
     }
     //LOGI("INVOKE_DIRECT 当前pc=%d ref=%s", ctx.pc, insn.referenceData.c_str());
-    //LOGI("INVOKE_DIRECT 调用完成�?s", insn.referenceData.c_str());
+    //LOGI("INVOKE_DIRECT 调用完成：%s", insn.referenceData.c_str());
 
     ctx.pc++;
     return true;
@@ -5299,12 +5391,12 @@ bool VmHandleInvokeSuper(VmContext &ctx, const VmpInstruction &insn) {
     std::string signature;
 
     if (!parseMethodReference(insn.referenceData, classType, methodName, signature)) {
-        LOGE("INVOKE_SUPER 方法引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_SUPER 方法引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     if (insn.registers.empty()) {
-        LOGE("INVOKE_SUPER 寄存器为�?);
+        LOGE("INVOKE_SUPER 寄存器为空");
         return false;
     }
 
@@ -5324,7 +5416,7 @@ bool VmHandleInvokeSuper(VmContext &ctx, const VmpInstruction &insn) {
     jclass superCls = findVmClassForStatic(ctx.env, classType);
 
     if (superCls == nullptr && loaderBaseObj != nullptr) {
-        superCls = findClassByType(ctx.env, loaderBaseObj, classType);
+        superCls = findClassByTypeWithObjectLoader(ctx.env, loaderBaseObj, classType);
     }
 
     if (superCls == nullptr) {
@@ -5361,14 +5453,14 @@ bool VmHandleInvokeSuper(VmContext &ctx, const VmpInstruction &insn) {
             jobject a1 = ctx.regs[insn.registers[2]].objectValue;
             ctx.env->CallNonvirtualVoidMethod(obj, superCls, mid, a0, a1);
         } else {
-            LOGE("INVOKE_SUPER_VOID 暂不支持参数数量�?d", argCount);
+            LOGE("INVOKE_SUPER_VOID 暂不支持参数数量：%d", argCount);
             return false;
         }
 
         if (ctx.env->ExceptionCheck()) {
             ctx.currentException = ctx.env->ExceptionOccurred();
             ctx.env->ExceptionClear();
-            LOGE("INVOKE_SUPER_VOID 调用失败�?s", insn.referenceData.c_str());
+            LOGE("INVOKE_SUPER_VOID 调用失败：%s", insn.referenceData.c_str());
             return false;
         }
     } else {
@@ -5382,14 +5474,14 @@ bool VmHandleInvokeSuper(VmContext &ctx, const VmpInstruction &insn) {
             jobject a1 = ctx.regs[insn.registers[2]].objectValue;
             ctx.lastResultObject = ctx.env->CallNonvirtualObjectMethod(obj, superCls, mid, a0, a1);
         } else {
-            LOGE("INVOKE_SUPER_OBJECT 暂不支持参数数量�?d", argCount);
+            LOGE("INVOKE_SUPER_OBJECT 暂不支持参数数量：%d", argCount);
             return false;
         }
 
         if (ctx.env->ExceptionCheck()) {
             ctx.currentException = ctx.env->ExceptionOccurred();
             ctx.env->ExceptionClear();
-            LOGE("INVOKE_SUPER_OBJECT 调用失败�?s", insn.referenceData.c_str());
+            LOGE("INVOKE_SUPER_OBJECT 调用失败：%s", insn.referenceData.c_str());
             if (VmContext_JumpToExceptionHandler(ctx, insn.codeUnitOffset)) {
                 return true;
             }
@@ -5399,7 +5491,7 @@ bool VmHandleInvokeSuper(VmContext &ctx, const VmpInstruction &insn) {
         //LOGI("INVOKE_SUPER_OBJECT result=%p", ctx.lastResultObject);
     }
 
-    //LOGI("INVOKE_SUPER 调用完成�?s", insn.referenceData.c_str());
+    //LOGI("INVOKE_SUPER 调用完成：%s", insn.referenceData.c_str());
 
     ctx.pc++;
     return true;
@@ -5411,12 +5503,12 @@ bool VmHandleInvokeInterface(VmContext &ctx, const VmpInstruction &insn) {
     std::string signature;
 
     if (!parseMethodReference(insn.referenceData, classType, methodName, signature)) {
-        LOGE("INVOKE_INTERFACE 方法引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_INTERFACE 方法引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     if (insn.registers.empty()) {
-        LOGE("INVOKE_INTERFACE 寄存器为�?);
+        LOGE("INVOKE_INTERFACE 寄存器为空");
         return false;
     }
 
@@ -5430,7 +5522,7 @@ bool VmHandleInvokeInterface(VmContext &ctx, const VmpInstruction &insn) {
 
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
     if (cls == nullptr) {
-        LOGE("INVOKE_INTERFACE 找不到接口类�?s", classType.c_str());
+        LOGE("INVOKE_INTERFACE 找不到接口类：%s", classType.c_str());
         return false;
     }
 
@@ -5454,7 +5546,7 @@ bool VmHandleInvokeInterface(VmContext &ctx, const VmpInstruction &insn) {
     std::string returnType = parseMethodReturnType(signature);
 
     if (insn.registers.size() - 1 < paramTypes.size()) {
-        LOGE("INVOKE_INTERFACE 参数寄存器数量不�?ref=%s", insn.referenceData.c_str());
+        LOGE("INVOKE_INTERFACE 参数寄存器数量不足 ref=%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -5531,14 +5623,14 @@ bool VmHandleInvokeInterface(VmContext &ctx, const VmpInstruction &insn) {
     if (ctx.env->ExceptionCheck()) {
         ctx.currentException = ctx.env->ExceptionOccurred();
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_INTERFACE 调用失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_INTERFACE 调用失败：%s", insn.referenceData.c_str());
         if (VmContext_JumpToExceptionHandler(ctx, insn.codeUnitOffset)) {
             return true;
         }
         return false;
     }
 
-    //LOGI("INVOKE_INTERFACE 调用完成�?s", insn.referenceData.c_str());
+    //LOGI("INVOKE_INTERFACE 调用完成：%s", insn.referenceData.c_str());
 
     ctx.pc++;
     return true;
@@ -5561,12 +5653,12 @@ bool VmHandleInvokeVirtualRange(VmContext &ctx, const VmpInstruction &insn) {
     std::string signature;
 
     if (!parseMethodReference(insn.referenceData, classType, methodName, signature)) {
-        LOGE("INVOKE_VIRTUAL_RANGE 方法引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_VIRTUAL_RANGE 方法引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     if (insn.registers.empty()) {
-        LOGE("INVOKE_VIRTUAL_RANGE 寄存器为�?);
+        LOGE("INVOKE_VIRTUAL_RANGE 寄存器为空");
         return false;
     }
 
@@ -5581,7 +5673,7 @@ bool VmHandleInvokeVirtualRange(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("INVOKE_VIRTUAL_RANGE 找不到类�?s", classType.c_str());
+        LOGE("INVOKE_VIRTUAL_RANGE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -5644,7 +5736,7 @@ bool VmHandleInvokeVirtualRange(VmContext &ctx, const VmpInstruction &insn) {
     if (ctx.env->ExceptionCheck()) {
         ctx.currentException = ctx.env->ExceptionOccurred();
         //ctx.env->ExceptionClear();
-        LOGE("INVOKE_VIRTUAL_RANGE 调用失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_VIRTUAL_RANGE 调用失败：%s", insn.referenceData.c_str());
         logAndClearJavaException(ctx.env, "INVOKE_VIRTUAL_RANGE");
         if (VmContext_JumpToExceptionHandler(ctx, insn.codeUnitOffset)) {
             return true;
@@ -5652,7 +5744,7 @@ bool VmHandleInvokeVirtualRange(VmContext &ctx, const VmpInstruction &insn) {
         return false;
     }
 
-    //LOGI("INVOKE_VIRTUAL_RANGE 调用完成�?s", insn.referenceData.c_str());
+    //LOGI("INVOKE_VIRTUAL_RANGE 调用完成：%s", insn.referenceData.c_str());
 
     ctx.pc++;
     return true;
@@ -5664,12 +5756,12 @@ bool VmHandleInvokeSuperRange(VmContext &ctx, const VmpInstruction &insn) {
     std::string signature;
 
     if (!parseMethodReference(insn.referenceData, classType, methodName, signature)) {
-        LOGE("INVOKE_SUPER_RANGE 方法引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_SUPER_RANGE 方法引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     if (insn.registers.empty()) {
-        LOGE("INVOKE_SUPER_RANGE 寄存器为�?);
+        LOGE("INVOKE_SUPER_RANGE 寄存器为空");
         return false;
     }
 
@@ -5689,7 +5781,7 @@ bool VmHandleInvokeSuperRange(VmContext &ctx, const VmpInstruction &insn) {
     jclass superCls = findVmClassForStatic(ctx.env, classType);
 
     if (superCls == nullptr && loaderBaseObj != nullptr) {
-        superCls = findClassByType(ctx.env, loaderBaseObj, classType);
+        superCls = findClassByTypeWithObjectLoader(ctx.env, loaderBaseObj, classType);
     }
 
     if (superCls == nullptr) {
@@ -5731,14 +5823,14 @@ bool VmHandleInvokeSuperRange(VmContext &ctx, const VmpInstruction &insn) {
             jobject a2 = ctx.regs[insn.registers[3]].objectValue;
             ctx.env->CallNonvirtualVoidMethod(obj, superCls, mid, a0, a1, a2);
         } else {
-            LOGE("INVOKE_SUPER_RANGE_VOID 暂不支持参数数量�?d", argCount);
+            LOGE("INVOKE_SUPER_RANGE_VOID 暂不支持参数数量：%d", argCount);
             return false;
         }
 
         if (ctx.env->ExceptionCheck()) {
             ctx.currentException = ctx.env->ExceptionOccurred();
             ctx.env->ExceptionClear();
-            LOGE("INVOKE_SUPER_RANGE_VOID 调用失败�?s", insn.referenceData.c_str());
+            LOGE("INVOKE_SUPER_RANGE_VOID 调用失败：%s", insn.referenceData.c_str());
             return false;
         }
     } else {
@@ -5757,14 +5849,14 @@ bool VmHandleInvokeSuperRange(VmContext &ctx, const VmpInstruction &insn) {
             jobject a2 = ctx.regs[insn.registers[3]].objectValue;
             ctx.lastResultObject = ctx.env->CallNonvirtualObjectMethod(obj, superCls, mid, a0, a1, a2);
         } else {
-            LOGE("INVOKE_SUPER_RANGE_OBJECT 暂不支持参数数量�?d", argCount);
+            LOGE("INVOKE_SUPER_RANGE_OBJECT 暂不支持参数数量：%d", argCount);
             return false;
         }
 
         if (ctx.env->ExceptionCheck()) {
             ctx.currentException = ctx.env->ExceptionOccurred();
             ctx.env->ExceptionClear();
-            LOGE("INVOKE_SUPER_RANGE_OBJECT 调用失败�?s", insn.referenceData.c_str());
+            LOGE("INVOKE_SUPER_RANGE_OBJECT 调用失败：%s", insn.referenceData.c_str());
             if (VmContext_JumpToExceptionHandler(ctx, insn.codeUnitOffset)) {
                 return true;
             }
@@ -5774,7 +5866,7 @@ bool VmHandleInvokeSuperRange(VmContext &ctx, const VmpInstruction &insn) {
         //LOGI("INVOKE_SUPER_RANGE_OBJECT result=%p", ctx.lastResultObject);
     }
 
-    //LOGI("INVOKE_SUPER_RANGE 调用完成�?s", insn.referenceData.c_str());
+    //LOGI("INVOKE_SUPER_RANGE 调用完成：%s", insn.referenceData.c_str());
 
     ctx.pc++;
     return true;
@@ -5786,7 +5878,7 @@ bool VmHandleInvokeStaticRange(VmContext &ctx, const VmpInstruction &insn) {
     std::string signature;
 
     if (!parseMethodReference(insn.referenceData, classType, methodName, signature)) {
-        LOGE("INVOKE_STATIC_RANGE 方法引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_STATIC_RANGE 方法引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -5803,10 +5895,10 @@ bool VmHandleInvokeStaticRange(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForStatic(ctx.env, classType);
 
     if (cls == nullptr && loaderBaseObj != nullptr) {
-        cls = findClassByType(ctx.env, loaderBaseObj, classType);
+        cls = findClassByTypeWithObjectLoader(ctx.env, loaderBaseObj, classType);
     }
     if (cls == nullptr) {
-        LOGE("INVOKE_STATIC_RANGE 找不到类�?s", classType.c_str());
+        LOGE("INVOKE_STATIC_RANGE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -5859,14 +5951,14 @@ bool VmHandleInvokeStaticRange(VmContext &ctx, const VmpInstruction &insn) {
     if (ctx.env->ExceptionCheck()) {
         ctx.currentException = ctx.env->ExceptionOccurred();
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_STATIC_RANGE 调用失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_STATIC_RANGE 调用失败：%s", insn.referenceData.c_str());
         if (VmContext_JumpToExceptionHandler(ctx, insn.codeUnitOffset)) {
             return true;
         }
         return false;
     }
 
-    //LOGI("INVOKE_STATIC_RANGE 调用完成�?s", insn.referenceData.c_str());
+    //LOGI("INVOKE_STATIC_RANGE 调用完成：%s", insn.referenceData.c_str());
 
     ctx.pc++;
     return true;
@@ -5879,12 +5971,12 @@ bool VmHandleInvokeInterfaceRange(VmContext &ctx, const VmpInstruction &insn) {
     std::string signature;
 
     if (!parseMethodReference(insn.referenceData, classType, methodName, signature)) {
-        LOGE("INVOKE_INTERFACE_RANGE 方法引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_INTERFACE_RANGE 方法引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     if (insn.registers.size() < 1) {
-        LOGE("INVOKE_INTERFACE_RANGE 寄存器数量不�?);
+        LOGE("INVOKE_INTERFACE_RANGE 寄存器数量不足");
         return false;
     }
 
@@ -5898,7 +5990,7 @@ bool VmHandleInvokeInterfaceRange(VmContext &ctx, const VmpInstruction &insn) {
 
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
     if (cls == nullptr) {
-        LOGE("INVOKE_INTERFACE_RANGE 找不到接口类�?s", classType.c_str());
+        LOGE("INVOKE_INTERFACE_RANGE 找不到接口类：%s", classType.c_str());
         return false;
     }
 
@@ -5960,14 +6052,14 @@ bool VmHandleInvokeInterfaceRange(VmContext &ctx, const VmpInstruction &insn) {
     if (ctx.env->ExceptionCheck()) {
         ctx.currentException = ctx.env->ExceptionOccurred();
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_INTERFACE_RANGE 调用失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_INTERFACE_RANGE 调用失败：%s", insn.referenceData.c_str());
         if (VmContext_JumpToExceptionHandler(ctx, insn.codeUnitOffset)) {
             return true;
         }
         return false;
     }
 
-    //LOGI("INVOKE_INTERFACE_RANGE 调用完成�?s", insn.referenceData.c_str());
+    //LOGI("INVOKE_INTERFACE_RANGE 调用完成：%s", insn.referenceData.c_str());
 
     ctx.pc++;
     return true;
@@ -5996,7 +6088,7 @@ bool VmHandleUnused7A(VmContext &ctx, const VmpInstruction &insn) {
 //指令 NEG_INT
 bool VmHandleNegInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("NEG_INT 寄存器数量不�?);
+        LOGE("NEG_INT 寄存器数量不足");
         return false;
     }
 
@@ -6019,7 +6111,7 @@ bool VmHandleNegInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 NOT_INT
 bool VmHandleNotInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("NOT_INT 寄存器数量不�?);
+        LOGE("NOT_INT 寄存器数量不足");
         return false;
     }
 
@@ -6042,7 +6134,7 @@ bool VmHandleNotInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 NEG_LONG
 bool VmHandleNegLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("NEG_LONG 寄存器数量不�?);
+        LOGE("NEG_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6065,7 +6157,7 @@ bool VmHandleNegLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 NOT_LONG
 bool VmHandleNotLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("NOT_LONG 寄存器数量不�?);
+        LOGE("NOT_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6087,7 +6179,7 @@ bool VmHandleNotLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 NEG_FLOAT
 bool VmHandleNegFloat(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("NEG_FLOAT 寄存器数量不�?);
+        LOGE("NEG_FLOAT 寄存器数量不足");
         return false;
     }
 
@@ -6110,7 +6202,7 @@ bool VmHandleNegFloat(VmContext &ctx, const VmpInstruction &insn) {
 //指令 NEG_DOUBLE
 bool VmHandleNegDouble(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("NEG_DOUBLE 寄存器数量不�?);
+        LOGE("NEG_DOUBLE 寄存器数量不足");
         return false;
     }
 
@@ -6132,7 +6224,7 @@ bool VmHandleNegDouble(VmContext &ctx, const VmpInstruction &insn) {
 //指令 INT_TO_LONG
 bool VmHandleIntToLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("INT_TO_LONG 寄存器数量不�?);
+        LOGE("INT_TO_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6154,7 +6246,7 @@ bool VmHandleIntToLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 INT_TO_FLOAT
 bool VmHandleIntToFloat(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("INT_TO_FLOAT 寄存器数量不�?);
+        LOGE("INT_TO_FLOAT 寄存器数量不足");
         return false;
     }
 
@@ -6180,7 +6272,7 @@ bool VmHandleIntToFloat(VmContext &ctx, const VmpInstruction &insn) {
 //指令 INT_TO_DOUBLE
 bool VmHandleIntToDouble(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("INT_TO_DOUBLE 寄存器数量不�?);
+        LOGE("INT_TO_DOUBLE 寄存器数量不足");
         return false;
     }
 
@@ -6209,7 +6301,7 @@ bool VmHandleIntToDouble(VmContext &ctx, const VmpInstruction &insn) {
 //指令 LONG_TO_INT
 bool VmHandleLongToInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("LONG_TO_INT 寄存器数量不�?);
+        LOGE("LONG_TO_INT 寄存器数量不足");
         return false;
     }
 
@@ -6232,7 +6324,7 @@ bool VmHandleLongToInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 LONG_TO_FLOAT
 bool VmHandleLongToFloat(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("LONG_TO_FLOAT 寄存器数量不�?);
+        LOGE("LONG_TO_FLOAT 寄存器数量不足");
         return false;
     }
 
@@ -6258,7 +6350,7 @@ bool VmHandleLongToFloat(VmContext &ctx, const VmpInstruction &insn) {
 //指令 LONG_TO_DOUBLE
 bool VmHandleLongToDouble(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("LONG_TO_DOUBLE 寄存器数量不�?);
+        LOGE("LONG_TO_DOUBLE 寄存器数量不足");
         return false;
     }
 
@@ -6283,7 +6375,7 @@ bool VmHandleLongToDouble(VmContext &ctx, const VmpInstruction &insn) {
 //指令 FLOAT_TO_INT
 bool VmHandleFloatToInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("FLOAT_TO_INT 寄存器数量不�?);
+        LOGE("FLOAT_TO_INT 寄存器数量不足");
         return false;
     }
 
@@ -6309,7 +6401,7 @@ bool VmHandleFloatToInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 FLOAT_TO_LONG
 bool VmHandleFloatToLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("FLOAT_TO_LONG 寄存器数量不�?);
+        LOGE("FLOAT_TO_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6332,7 +6424,7 @@ bool VmHandleFloatToLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 FLOAT_TO_DOUBLE
 bool VmHandleFloatToDouble(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("FLOAT_TO_DOUBLE 寄存器数量不�?);
+        LOGE("FLOAT_TO_DOUBLE 寄存器数量不足");
         return false;
     }
 
@@ -6356,7 +6448,7 @@ bool VmHandleFloatToDouble(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DOUBLE_TO_INT
 bool VmHandleDoubleToInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("DOUBLE_TO_INT 寄存器数量不�?);
+        LOGE("DOUBLE_TO_INT 寄存器数量不足");
         return false;
     }
 
@@ -6379,7 +6471,7 @@ bool VmHandleDoubleToInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DOUBLE_TO_LONG
 bool VmHandleDoubleToLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("DOUBLE_TO_LONG 寄存器数量不�?);
+        LOGE("DOUBLE_TO_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6402,7 +6494,7 @@ bool VmHandleDoubleToLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DOUBLE_TO_FLOAT
 bool VmHandleDoubleToFloat(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("DOUBLE_TO_FLOAT 寄存器数量不�?);
+        LOGE("DOUBLE_TO_FLOAT 寄存器数量不足");
         return false;
     }
 
@@ -6425,7 +6517,7 @@ bool VmHandleDoubleToFloat(VmContext &ctx, const VmpInstruction &insn) {
 //指令 INT_TO_BYTE
 bool VmHandleIntToByte(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("INT_TO_BYTE 寄存器数量不�?);
+        LOGE("INT_TO_BYTE 寄存器数量不足");
         return false;
     }
 
@@ -6447,7 +6539,7 @@ bool VmHandleIntToByte(VmContext &ctx, const VmpInstruction &insn) {
 //指令 INT_TO_CHAR
 bool VmHandleIntToChar(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("INT_TO_CHAR 寄存器数量不�?);
+        LOGE("INT_TO_CHAR 寄存器数量不足");
         return false;
     }
 
@@ -6469,7 +6561,7 @@ bool VmHandleIntToChar(VmContext &ctx, const VmpInstruction &insn) {
 //指令 INT_TO_SHORT
 bool VmHandleIntToShort(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("INT_TO_SHORT 寄存器数量不�?);
+        LOGE("INT_TO_SHORT 寄存器数量不足");
         return false;
     }
 
@@ -6490,7 +6582,7 @@ bool VmHandleIntToShort(VmContext &ctx, const VmpInstruction &insn) {
 //指令 ADD_INT
 bool VmHandleAddInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("ADD_INT 寄存器数量不�?);
+        LOGE("ADD_INT 寄存器数量不足");
         return false;
     }
 
@@ -6513,7 +6605,7 @@ bool VmHandleAddInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SUB_INT
 bool VmHandleSubInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("SUB_INT 寄存器数量不�?);
+        LOGE("SUB_INT 寄存器数量不足");
         return false;
     }
 
@@ -6536,7 +6628,7 @@ bool VmHandleSubInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MUL_INT
 bool VmHandleMulInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("MUL_INT 寄存器数量不�?);
+        LOGE("MUL_INT 寄存器数量不足");
         return false;
     }
 
@@ -6559,7 +6651,7 @@ bool VmHandleMulInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DIV_INT
 bool VmHandleDivInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("DIV_INT 寄存器数量不�?);
+        LOGE("DIV_INT 寄存器数量不足");
         return false;
     }
 
@@ -6570,7 +6662,7 @@ bool VmHandleDivInt(VmContext &ctx, const VmpInstruction &insn) {
     jint right = ctx.regs[src2].intValue;
 
     if (right == 0) {
-        LOGE("DIV_INT 除数�? v%d", src2);
+        LOGE("DIV_INT 除数为0 v%d", src2);
         return false;
     }
 
@@ -6588,7 +6680,7 @@ bool VmHandleDivInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 REM_INT
 bool VmHandleRemInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("REM_INT 寄存器数量不�?);
+        LOGE("REM_INT 寄存器数量不足");
         return false;
     }
 
@@ -6600,7 +6692,7 @@ bool VmHandleRemInt(VmContext &ctx, const VmpInstruction &insn) {
     jint right = ctx.regs[src2].intValue;
 
     if (right == 0) {
-        LOGE("REM_INT 除数�? v%d", src2);
+        LOGE("REM_INT 除数为0 v%d", src2);
         return false;
     }
 
@@ -6617,7 +6709,7 @@ bool VmHandleRemInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AND_INT
 bool VmHandleAndInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("AND_INT 寄存器数量不�?);
+        LOGE("AND_INT 寄存器数量不足");
         return false;
     }
 
@@ -6641,7 +6733,7 @@ bool VmHandleAndInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 OR_INT
 bool VmHandleOrInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("OR_INT 寄存器数量不�?);
+        LOGE("OR_INT 寄存器数量不足");
         return false;
     }
 
@@ -6664,7 +6756,7 @@ bool VmHandleOrInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 XOR_INT
 bool VmHandleXorInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("XOR_INT 寄存器数量不�?);
+        LOGE("XOR_INT 寄存器数量不足");
         return false;
     }
 
@@ -6684,7 +6776,7 @@ bool VmHandleXorInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SHL_INT
 bool VmHandleShlInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("SHL_INT 寄存器数量不�?);
+        LOGE("SHL_INT 寄存器数量不足");
         return false;
     }
 
@@ -6709,7 +6801,7 @@ bool VmHandleShlInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SHR_INT
 bool VmHandleShrInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("SHR_INT 寄存器数量不�?);
+        LOGE("SHR_INT 寄存器数量不足");
         return false;
     }
 
@@ -6734,7 +6826,7 @@ bool VmHandleShrInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 USHR_INT
 bool VmHandleUshrInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("USHR_INT 寄存器数量不�?);
+        LOGE("USHR_INT 寄存器数量不足");
         return false;
     }
 
@@ -6759,7 +6851,7 @@ bool VmHandleUshrInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 ADD_LONG
 bool VmHandleAddLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("ADD_LONG 寄存器数量不�?);
+        LOGE("ADD_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6784,7 +6876,7 @@ bool VmHandleAddLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SUB_LONG
 bool VmHandleSubLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("SUB_LONG 寄存器数量不�?);
+        LOGE("SUB_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6809,7 +6901,7 @@ bool VmHandleSubLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MUL_LONG
 bool VmHandleMulLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("MUL_LONG 寄存器数量不�?);
+        LOGE("MUL_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6833,7 +6925,7 @@ bool VmHandleMulLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DIV_LONG
 bool VmHandleDivLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("DIV_LONG 寄存器数量不�?);
+        LOGE("DIV_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6845,7 +6937,7 @@ bool VmHandleDivLong(VmContext &ctx, const VmpInstruction &insn) {
     jlong right = ctx.regs[src2].longValue;
 
     if (right == 0) {
-        LOGE("DIV_LONG 除数�?");
+        LOGE("DIV_LONG 除数为0");
         return false;
     }
 
@@ -6862,7 +6954,7 @@ bool VmHandleDivLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 REM_LONG
 bool VmHandleRemLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("REM_LONG 寄存器数量不�?);
+        LOGE("REM_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6874,7 +6966,7 @@ bool VmHandleRemLong(VmContext &ctx, const VmpInstruction &insn) {
     jlong right = ctx.regs[src2].longValue;
 
     if (right == 0) {
-        LOGE("REM_LONG 除数�?");
+        LOGE("REM_LONG 除数为0");
         return false;
     }
 
@@ -6891,7 +6983,7 @@ bool VmHandleRemLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AND_LONG
 bool VmHandleAndLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("AND_LONG 寄存器数量不�?);
+        LOGE("AND_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6912,7 +7004,7 @@ bool VmHandleAndLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 OR_LONG
 bool VmHandleOrLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("OR_LONG 寄存器数量不�?);
+        LOGE("OR_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6933,7 +7025,7 @@ bool VmHandleOrLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 XOR_LONG
 bool VmHandleXorLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("XOR_LONG 寄存器数量不�?);
+        LOGE("XOR_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6954,7 +7046,7 @@ bool VmHandleXorLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SHL_LONG
 bool VmHandleShlLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("SHL_LONG 寄存器数量不�?);
+        LOGE("SHL_LONG 寄存器数量不足");
         return false;
     }
 
@@ -6977,7 +7069,7 @@ bool VmHandleShlLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SHR_LONG
 bool VmHandleShrLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("SHR_LONG 寄存器数量不�?);
+        LOGE("SHR_LONG 寄存器数量不足");
         return false;
     }
 
@@ -7003,7 +7095,7 @@ bool VmHandleShrLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 USHR_LONG
 bool VmHandleUshrLong(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("USHR_LONG 寄存器数量不�?);
+        LOGE("USHR_LONG 寄存器数量不足");
         return false;
     }
 
@@ -7029,7 +7121,7 @@ bool VmHandleUshrLong(VmContext &ctx, const VmpInstruction &insn) {
 //指令 ADD_FLOAT
 bool VmHandleAddFloat(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("ADD_FLOAT 寄存器数量不�?);
+        LOGE("ADD_FLOAT 寄存器数量不足");
         return false;
     }
 
@@ -7054,7 +7146,7 @@ bool VmHandleAddFloat(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SUB_FLOAT
 bool VmHandleSubFloat(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("SUB_FLOAT 寄存器数量不�?);
+        LOGE("SUB_FLOAT 寄存器数量不足");
         return false;
     }
 
@@ -7079,7 +7171,7 @@ bool VmHandleSubFloat(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MUL_FLOAT
 bool VmHandleMulFloat(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("MUL_FLOAT 寄存器数量不�?);
+        LOGE("MUL_FLOAT 寄存器数量不足");
         return false;
     }
 
@@ -7104,7 +7196,7 @@ bool VmHandleMulFloat(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DIV_FLOAT
 bool VmHandleDivFloat(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("DIV_FLOAT 寄存器数量不�?);
+        LOGE("DIV_FLOAT 寄存器数量不足");
         return false;
     }
 
@@ -7129,7 +7221,7 @@ bool VmHandleDivFloat(VmContext &ctx, const VmpInstruction &insn) {
 //指令 REM_FLOAT
 bool VmHandleRemFloat(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("REM_FLOAT 寄存器数量不�?);
+        LOGE("REM_FLOAT 寄存器数量不足");
         return false;
     }
 
@@ -7153,7 +7245,7 @@ bool VmHandleRemFloat(VmContext &ctx, const VmpInstruction &insn) {
 //指令 ADD_DOUBLE
 bool VmHandleAddDouble(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("ADD_DOUBLE 寄存器数量不�?);
+        LOGE("ADD_DOUBLE 寄存器数量不足");
         return false;
     }
 
@@ -7178,7 +7270,7 @@ bool VmHandleAddDouble(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SUB_DOUBLE
 bool VmHandleSubDouble(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("SUB_DOUBLE 寄存器数量不�?);
+        LOGE("SUB_DOUBLE 寄存器数量不足");
         return false;
     }
 
@@ -7203,7 +7295,7 @@ bool VmHandleSubDouble(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MUL_DOUBLE
 bool VmHandleMulDouble(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("MUL_DOUBLE 寄存器数量不�?);
+        LOGE("MUL_DOUBLE 寄存器数量不足");
         return false;
     }
 
@@ -7228,7 +7320,7 @@ bool VmHandleMulDouble(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DIV_DOUBLE
 bool VmHandleDivDouble(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("DIV_DOUBLE 寄存器数量不�?);
+        LOGE("DIV_DOUBLE 寄存器数量不足");
         return false;
     }
 
@@ -7253,7 +7345,7 @@ bool VmHandleDivDouble(VmContext &ctx, const VmpInstruction &insn) {
 //指令 REM_DOUBLE
 bool VmHandleRemDouble(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 3) {
-        LOGE("REM_DOUBLE 寄存器数量不�?);
+        LOGE("REM_DOUBLE 寄存器数量不足");
         return false;
     }
 
@@ -7277,7 +7369,7 @@ bool VmHandleRemDouble(VmContext &ctx, const VmpInstruction &insn) {
 //指令 ADD_INT_2ADDR
 bool VmHandleAddInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("ADD_INT_2ADDR 寄存器数量不�?);
+        LOGE("ADD_INT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7299,7 +7391,7 @@ bool VmHandleAddInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SUB_INT_2ADDR
 bool VmHandleSubInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("SUB_INT_2ADDR 寄存器数量不�?);
+        LOGE("SUB_INT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7321,7 +7413,7 @@ bool VmHandleSubInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MUL_INT_2ADDR
 bool VmHandleMulInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MUL_INT_2ADDR 寄存器数量不�?);
+        LOGE("MUL_INT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7343,7 +7435,7 @@ bool VmHandleMulInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DIV_INT_2ADDR
 bool VmHandleDivInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("DIV_INT_2ADDR 寄存器数量不�?);
+        LOGE("DIV_INT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7353,7 +7445,7 @@ bool VmHandleDivInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     jint right = ctx.regs[src].intValue;
 
     if (right == 0) {
-        LOGE("DIV_INT_2ADDR 除数�?");
+        LOGE("DIV_INT_2ADDR 除数为0");
         return false;
     }
 
@@ -7372,7 +7464,7 @@ bool VmHandleDivInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 REM_INT_2ADDR
 bool VmHandleRemInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("REM_INT_2ADDR 寄存器数量不�?);
+        LOGE("REM_INT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7382,7 +7474,7 @@ bool VmHandleRemInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     jint right = ctx.regs[src].intValue;
 
     if (right == 0) {
-        LOGE("REM_INT_2ADDR 除数�?");
+        LOGE("REM_INT_2ADDR 除数为0");
         return false;
     }
 
@@ -7401,7 +7493,7 @@ bool VmHandleRemInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AND_INT_2ADDR
 bool VmHandleAndInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("AND_INT_2ADDR 寄存器数量不�?);
+        LOGE("AND_INT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7423,7 +7515,7 @@ bool VmHandleAndInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 OR_INT_2ADDR
 bool VmHandleOrInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("OR_INT_2ADDR 寄存器数量不�?);
+        LOGE("OR_INT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7444,7 +7536,7 @@ bool VmHandleOrInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 XOR_INT_2ADDR
 bool VmHandleXorInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("XOR_INT_2ADDR 寄存器数量不�?);
+        LOGE("XOR_INT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7463,7 +7555,7 @@ bool VmHandleXorInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SHL_INT_2ADDR
 bool VmHandleShlInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("SHL_INT_2ADDR 寄存器数量不�?);
+        LOGE("SHL_INT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7487,7 +7579,7 @@ bool VmHandleShlInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SHR_INT_2ADDR
 bool VmHandleShrInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("SHR_INT_2ADDR 寄存器数量不�?);
+        LOGE("SHR_INT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7511,7 +7603,7 @@ bool VmHandleShrInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 USHR_INT_2ADDR
 bool VmHandleUshrInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("USHR_INT_2ADDR 寄存器数量不�?);
+        LOGE("USHR_INT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7535,7 +7627,7 @@ bool VmHandleUshrInt2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 ADD_LONG_2ADDR
 bool VmHandleAddLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("ADD_LONG_2ADDR 寄存器数量不�?);
+        LOGE("ADD_LONG_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7559,7 +7651,7 @@ bool VmHandleAddLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SUB_LONG_2ADDR
 bool VmHandleSubLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("SUB_LONG_2ADDR 寄存器数量不�?);
+        LOGE("SUB_LONG_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7583,7 +7675,7 @@ bool VmHandleSubLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MUL_LONG_2ADDR
 bool VmHandleMulLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MUL_LONG_2ADDR 寄存器数量不�?);
+        LOGE("MUL_LONG_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7607,7 +7699,7 @@ bool VmHandleMulLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DIV_LONG_2ADDR
 bool VmHandleDivLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("DIV_LONG_2ADDR 寄存器数量不�?);
+        LOGE("DIV_LONG_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7618,7 +7710,7 @@ bool VmHandleDivLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     jlong right = ctx.regs[src].longValue;
 
     if (right == 0) {
-        LOGE("DIV_LONG_2ADDR 除数�?");
+        LOGE("DIV_LONG_2ADDR 除数为0");
 
         jclass cls = ctx.env->FindClass("java/lang/ArithmeticException");
         if (cls != nullptr) {
@@ -7642,7 +7734,7 @@ bool VmHandleDivLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 REM_LONG_2ADDR
 bool VmHandleRemLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("REM_LONG_2ADDR 寄存器数量不�?);
+        LOGE("REM_LONG_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7653,7 +7745,7 @@ bool VmHandleRemLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     jlong right = ctx.regs[src].longValue;
 
     if (right == 0) {
-        LOGE("REM_LONG_2ADDR 除数�? v%d", src);
+        LOGE("REM_LONG_2ADDR 除数为0 v%d", src);
         return false;
     }
 
@@ -7669,7 +7761,7 @@ bool VmHandleRemLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AND_LONG_2ADDR
 bool VmHandleAndLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("AND_LONG_2ADDR 寄存器数量不�?);
+        LOGE("AND_LONG_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7691,7 +7783,7 @@ bool VmHandleAndLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 OR_LONG_2ADDR
 bool VmHandleOrLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("OR_LONG_2ADDR 寄存器数量不�?);
+        LOGE("OR_LONG_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7713,7 +7805,7 @@ bool VmHandleOrLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 XOR_LONG_2ADDR
 bool VmHandleXorLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("XOR_LONG_2ADDR 寄存器数量不�?);
+        LOGE("XOR_LONG_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7735,7 +7827,7 @@ bool VmHandleXorLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SHL_LONG_2ADDR
 bool VmHandleShlLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("SHL_LONG_2ADDR 寄存器数量不�?);
+        LOGE("SHL_LONG_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7757,7 +7849,7 @@ bool VmHandleShlLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SHR_LONG_2ADDR
 bool VmHandleShrLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("SHR_LONG_2ADDR 寄存器数量不�?);
+        LOGE("SHR_LONG_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7779,7 +7871,7 @@ bool VmHandleShrLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 USHR_LONG_2ADDR
 bool VmHandleUshrLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("USHR_LONG_2ADDR 寄存器数量不�?);
+        LOGE("USHR_LONG_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7802,7 +7894,7 @@ bool VmHandleUshrLong2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 ADD_FLOAT_2ADDR
 bool VmHandleAddFloat2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("ADD_FLOAT_2ADDR 寄存器数量不�?);
+        LOGE("ADD_FLOAT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7826,7 +7918,7 @@ bool VmHandleAddFloat2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SUB_FLOAT_2ADDR
 bool VmHandleSubFloat2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("SUB_FLOAT_2ADDR 寄存器数量不�?);
+        LOGE("SUB_FLOAT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7850,7 +7942,7 @@ bool VmHandleSubFloat2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MUL_FLOAT_2ADDR
 bool VmHandleMulFloat2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MUL_FLOAT_2ADDR 寄存器数量不�?);
+        LOGE("MUL_FLOAT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7874,7 +7966,7 @@ bool VmHandleMulFloat2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DIV_FLOAT_2ADDR
 bool VmHandleDivFloat2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("DIV_FLOAT_2ADDR 寄存器数量不�?);
+        LOGE("DIV_FLOAT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7898,7 +7990,7 @@ bool VmHandleDivFloat2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 REM_FLOAT_2ADDR
 bool VmHandleRemFloat2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("REM_FLOAT_2ADDR 寄存器数量不�?);
+        LOGE("REM_FLOAT_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7921,7 +8013,7 @@ bool VmHandleRemFloat2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 ADD_DOUBLE_2ADDR
 bool VmHandleAddDouble2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("ADD_DOUBLE_2ADDR 寄存器数量不�?);
+        LOGE("ADD_DOUBLE_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7950,7 +8042,7 @@ bool VmHandleAddDouble2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SUB_DOUBLE_2ADDR
 bool VmHandleSubDouble2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("SUB_DOUBLE_2ADDR 寄存器数量不�?);
+        LOGE("SUB_DOUBLE_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -7979,7 +8071,7 @@ bool VmHandleSubDouble2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MUL_DOUBLE_2ADDR
 bool VmHandleMulDouble2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MUL_DOUBLE_2ADDR 寄存器数量不�?);
+        LOGE("MUL_DOUBLE_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -8008,7 +8100,7 @@ bool VmHandleMulDouble2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DIV_DOUBLE_2ADDR
 bool VmHandleDivDouble2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("DIV_DOUBLE_2ADDR 寄存器数量不�?);
+        LOGE("DIV_DOUBLE_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -8037,7 +8129,7 @@ bool VmHandleDivDouble2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 REM_DOUBLE_2ADDR
 bool VmHandleRemDouble2Addr(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("REM_DOUBLE_2ADDR 寄存器数量不�?);
+        LOGE("REM_DOUBLE_2ADDR 寄存器数量不足");
         return false;
     }
 
@@ -8065,7 +8157,7 @@ bool VmHandleRemDouble2Addr(VmContext &ctx, const VmpInstruction &insn) {
 //指令 ADD_INT_LIT16
 bool VmHandleAddIntLit16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("ADD_INT_LIT16 寄存器数量不�?);
+        LOGE("ADD_INT_LIT16 寄存器数量不足");
         return false;
     }
 
@@ -8088,7 +8180,7 @@ bool VmHandleAddIntLit16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 RSUB_INT
 bool VmHandleRsubInt(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("RSUB_INT 寄存器数量不�?);
+        LOGE("RSUB_INT 寄存器数量不足");
         return false;
     }
 
@@ -8111,7 +8203,7 @@ bool VmHandleRsubInt(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MUL_INT_LIT16
 bool VmHandleMulIntLit16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MUL_INT_LIT16 寄存器数量不�?);
+        LOGE("MUL_INT_LIT16 寄存器数量不足");
         return false;
     }
 
@@ -8134,7 +8226,7 @@ bool VmHandleMulIntLit16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DIV_INT_LIT16
 bool VmHandleDivIntLit16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("DIV_INT_LIT16 寄存器数量不�?);
+        LOGE("DIV_INT_LIT16 寄存器数量不足");
         return false;
     }
 
@@ -8143,7 +8235,7 @@ bool VmHandleDivIntLit16(VmContext &ctx, const VmpInstruction &insn) {
     int literal = static_cast<int16_t>(insn.literalValue);
 
     if (literal == 0) {
-        LOGE("DIV_INT_LIT16 除数�?");
+        LOGE("DIV_INT_LIT16 除数为0");
         return false;
     }
 
@@ -8162,7 +8254,7 @@ bool VmHandleDivIntLit16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 REM_INT_LIT16
 bool VmHandleRemIntLit16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("REM_INT_LIT16 寄存器数量不�?);
+        LOGE("REM_INT_LIT16 寄存器数量不足");
         return false;
     }
 
@@ -8171,7 +8263,7 @@ bool VmHandleRemIntLit16(VmContext &ctx, const VmpInstruction &insn) {
     int literal = static_cast<int16_t>(insn.literalValue);
 
     if (literal == 0) {
-        LOGE("REM_INT_LIT16 除数�?");
+        LOGE("REM_INT_LIT16 除数为0");
         return false;
     }
 
@@ -8190,7 +8282,7 @@ bool VmHandleRemIntLit16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AND_INT_LIT16
 bool VmHandleAndIntLit16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("AND_INT_LIT16 寄存器数量不�?);
+        LOGE("AND_INT_LIT16 寄存器数量不足");
         return false;
     }
 
@@ -8213,7 +8305,7 @@ bool VmHandleAndIntLit16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 OR_INT_LIT16
 bool VmHandleOrIntLit16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("OR_INT_LIT16 寄存器数量不�?);
+        LOGE("OR_INT_LIT16 寄存器数量不足");
         return false;
     }
 
@@ -8235,7 +8327,7 @@ bool VmHandleOrIntLit16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 XOR_INT_LIT16
 bool VmHandleXorIntLit16(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("XOR_INT_LIT16 寄存器数量不�?);
+        LOGE("XOR_INT_LIT16 寄存器数量不足");
         return false;
     }
 
@@ -8255,7 +8347,7 @@ bool VmHandleXorIntLit16(VmContext &ctx, const VmpInstruction &insn) {
 //指令 ADD_INT_LIT8
 bool VmHandleAddIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("ADD_INT_LIT8 寄存器数量不�?);
+        LOGE("ADD_INT_LIT8 寄存器数量不足");
         return false;
     }
 
@@ -8278,7 +8370,7 @@ bool VmHandleAddIntLit8(VmContext &ctx, const VmpInstruction &insn) {
 //指令 RSUB_INT_LIT8
 bool VmHandleRsubIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("RSUB_INT_LIT8 寄存器数量不�?);
+        LOGE("RSUB_INT_LIT8 寄存器数量不足");
         return false;
     }
 
@@ -8300,7 +8392,7 @@ bool VmHandleRsubIntLit8(VmContext &ctx, const VmpInstruction &insn) {
 //指令 MUL_INT_LIT8
 bool VmHandleMulIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("MUL_INT_LIT8 寄存器数量不�?);
+        LOGE("MUL_INT_LIT8 寄存器数量不足");
         return false;
     }
 
@@ -8320,7 +8412,7 @@ bool VmHandleMulIntLit8(VmContext &ctx, const VmpInstruction &insn) {
 //指令 DIV_INT_LIT8
 bool VmHandleDivIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("DIV_INT_LIT8 寄存器数量不�?);
+        LOGE("DIV_INT_LIT8 寄存器数量不足");
         return false;
     }
 
@@ -8331,7 +8423,7 @@ bool VmHandleDivIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     int right = static_cast<int8_t>(insn.literalValue);
 
     if (right == 0) {
-        LOGE("DIV_INT_LIT8 除数�?");
+        LOGE("DIV_INT_LIT8 除数为0");
         return false;
     }
 
@@ -8350,7 +8442,7 @@ bool VmHandleDivIntLit8(VmContext &ctx, const VmpInstruction &insn) {
 //指令 REM_INT_LIT8
 bool VmHandleRemIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("REM_INT_LIT8 寄存器数量不�?);
+        LOGE("REM_INT_LIT8 寄存器数量不足");
         return false;
     }
 
@@ -8361,7 +8453,7 @@ bool VmHandleRemIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     int right = static_cast<int8_t>(insn.literalValue);
 
     if (right == 0) {
-        LOGE("REM_INT_LIT8 除数�?");
+        LOGE("REM_INT_LIT8 除数为0");
         return false;
     }
 
@@ -8379,7 +8471,7 @@ bool VmHandleRemIntLit8(VmContext &ctx, const VmpInstruction &insn) {
 //指令 AND_INT_LIT8
 bool VmHandleAndIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("AND_INT_LIT8 寄存器数量不�?);
+        LOGE("AND_INT_LIT8 寄存器数量不足");
         return false;
     }
 
@@ -8401,7 +8493,7 @@ bool VmHandleAndIntLit8(VmContext &ctx, const VmpInstruction &insn) {
 //指令 OR_INT_LIT8
 bool VmHandleOrIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("OR_INT_LIT8 寄存器数量不�?);
+        LOGE("OR_INT_LIT8 寄存器数量不足");
         return false;
     }
 
@@ -8424,7 +8516,7 @@ bool VmHandleOrIntLit8(VmContext &ctx, const VmpInstruction &insn) {
 //指令 XOR_INT_LIT8
 bool VmHandleXorIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("XOR_INT_LIT8 寄存器数量不�?);
+        LOGE("XOR_INT_LIT8 寄存器数量不足");
         return false;
     }
 
@@ -8446,7 +8538,7 @@ bool VmHandleXorIntLit8(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SHL_INT_LIT8
 bool VmHandleShlIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("SHL_INT_LIT8 寄存器数量不�?);
+        LOGE("SHL_INT_LIT8 寄存器数量不足");
         return false;
     }
 
@@ -8470,7 +8562,7 @@ bool VmHandleShlIntLit8(VmContext &ctx, const VmpInstruction &insn) {
 //指令 SHR_INT_LIT8
 bool VmHandleShrIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("SHR_INT_LIT8 寄存器数量不�?);
+        LOGE("SHR_INT_LIT8 寄存器数量不足");
         return false;
     }
 
@@ -8494,7 +8586,7 @@ bool VmHandleShrIntLit8(VmContext &ctx, const VmpInstruction &insn) {
 //指令 USHR_INT_LIT8
 bool VmHandleUshrIntLit8(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 2) {
-        LOGE("USHR_INT_LIT8 寄存器数量不�?);
+        LOGE("USHR_INT_LIT8 寄存器数量不足");
         return false;
     }
 
@@ -8823,19 +8915,19 @@ bool VmHandleInvokePolymorphic(VmContext &ctx, const VmpInstruction &insn) {
     std::string oldSignature;
 
     if (!parseMethodReference(insn.referenceData, classType, methodName, oldSignature)) {
-        LOGE("INVOKE_POLYMORPHIC 方法引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_POLYMORPHIC 方法引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     if (insn.extraReferenceData.empty()) {
-        LOGE("INVOKE_POLYMORPHIC 缺少proto引用�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_POLYMORPHIC 缺少proto引用：%s", insn.referenceData.c_str());
         return false;
     }
 
     std::string realSignature = insn.extraReferenceData;
 
     if (insn.registers.empty()) {
-        LOGE("INVOKE_POLYMORPHIC 寄存器为�?);
+        LOGE("INVOKE_POLYMORPHIC 寄存器为空");
         return false;
     }
 
@@ -8850,7 +8942,7 @@ bool VmHandleInvokePolymorphic(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("INVOKE_POLYMORPHIC 找不到类�?s", classType.c_str());
+        LOGE("INVOKE_POLYMORPHIC 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -8876,7 +8968,7 @@ bool VmHandleInvokePolymorphic(VmContext &ctx, const VmpInstruction &insn) {
     std::string returnType = parseMethodReturnType(realSignature);
 
     if (static_cast<int>(paramTypes.size()) != static_cast<int>(insn.registers.size()) - 1) {
-        LOGE("INVOKE_POLYMORPHIC 参数数量不匹�?protoCount=%d regCount=%d",
+        LOGE("INVOKE_POLYMORPHIC 参数数量不匹配 protoCount=%d regCount=%d",
              static_cast<int>(paramTypes.size()),
              static_cast<int>(insn.registers.size()) - 1);
         return false;
@@ -8948,7 +9040,7 @@ bool VmHandleInvokePolymorphic(VmContext &ctx, const VmpInstruction &insn) {
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_POLYMORPHIC 调用失败�?s proto=%s",
+        LOGE("INVOKE_POLYMORPHIC 调用失败：%s proto=%s",
              insn.referenceData.c_str(),
              realSignature.c_str());
         return false;
@@ -8966,19 +9058,19 @@ bool VmHandleInvokePolymorphicRange(VmContext &ctx, const VmpInstruction &insn) 
     std::string oldSignature;
 
     if (!parseMethodReference(insn.referenceData, classType, methodName, oldSignature)) {
-        LOGE("INVOKE_POLYMORPHIC_RANGE 方法引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_POLYMORPHIC_RANGE 方法引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     if (insn.extraReferenceData.empty()) {
-        LOGE("INVOKE_POLYMORPHIC_RANGE 缺少proto引用�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_POLYMORPHIC_RANGE 缺少proto引用：%s", insn.referenceData.c_str());
         return false;
     }
 
     std::string realSignature = insn.extraReferenceData;
 
     if (insn.registers.empty()) {
-        LOGE("INVOKE_POLYMORPHIC_RANGE 寄存器为�?);
+        LOGE("INVOKE_POLYMORPHIC_RANGE 寄存器为空");
         return false;
     }
 
@@ -8993,7 +9085,7 @@ bool VmHandleInvokePolymorphicRange(VmContext &ctx, const VmpInstruction &insn) 
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("INVOKE_POLYMORPHIC_RANGE 找不到类�?s", classType.c_str());
+        LOGE("INVOKE_POLYMORPHIC_RANGE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -9019,7 +9111,7 @@ bool VmHandleInvokePolymorphicRange(VmContext &ctx, const VmpInstruction &insn) 
     std::string returnType = parseMethodReturnType(realSignature);
 
     if (static_cast<int>(paramTypes.size()) != static_cast<int>(insn.registers.size()) - 1) {
-        LOGE("INVOKE_POLYMORPHIC_RANGE 参数数量不匹�?protoCount=%d regCount=%d",
+        LOGE("INVOKE_POLYMORPHIC_RANGE 参数数量不匹配 protoCount=%d regCount=%d",
              static_cast<int>(paramTypes.size()),
              static_cast<int>(insn.registers.size()) - 1);
         return false;
@@ -9091,7 +9183,7 @@ bool VmHandleInvokePolymorphicRange(VmContext &ctx, const VmpInstruction &insn) 
 
     if (ctx.env->ExceptionCheck()) {
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_POLYMORPHIC_RANGE 调用失败�?s proto=%s",
+        LOGE("INVOKE_POLYMORPHIC_RANGE 调用失败：%s proto=%s",
              insn.referenceData.c_str(),
              realSignature.c_str());
         return false;
@@ -9114,7 +9206,7 @@ bool VmHandleInvokeCustom(VmContext &ctx, const VmpInstruction &insn) {
     jclass objectClass = ctx.env->FindClass("java/lang/Object");
     if (ctx.env->ExceptionCheck() || objectClass == nullptr) {
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_CUSTOM 找不到Object�?);
+        LOGE("INVOKE_CUSTOM 找不到Object类");
         return false;
     }
 
@@ -9153,14 +9245,14 @@ bool VmHandleInvokeCustom(VmContext &ctx, const VmpInstruction &insn) {
 
     if (ctx.env->ExceptionCheck() || mid == nullptr) {
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_CUSTOM 找不到辅助方�?invokeCustom");
+        LOGE("INVOKE_CUSTOM 找不到辅助方法 invokeCustom");
         return false;
     }
 
     jstring callSiteText = ctx.env->NewStringUTF(insn.referenceData.c_str());
     if (ctx.env->ExceptionCheck() || callSiteText == nullptr) {
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_CUSTOM 创建CallSite字符串失�?);
+        LOGE("INVOKE_CUSTOM 创建CallSite字符串失败");
         return false;
     }
 
@@ -9186,7 +9278,7 @@ bool VmHandleInvokeCustom(VmContext &ctx, const VmpInstruction &insn) {
 }
 
 //指令 INVOKE_CUSTOM_RANGE (0xFD)
-//�?INVOKE_CUSTOM 类似，但参数使用 register range 格式
+//与 INVOKE_CUSTOM 类似，但参数使用 register range 格式
 bool VmHandleInvokeCustomRange(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.referenceData.empty()) {
         LOGE("INVOKE_CUSTOM_RANGE 缺少CallSite引用");
@@ -9194,7 +9286,7 @@ bool VmHandleInvokeCustomRange(VmContext &ctx, const VmpInstruction &insn) {
     }
 
     if (insn.registers.size() < 2) {
-        LOGE("INVOKE_CUSTOM_RANGE 寄存器数量不足，需�?startReg + count");
+        LOGE("INVOKE_CUSTOM_RANGE 寄存器数量不足，需要 startReg + count");
         return false;
     }
 
@@ -9202,7 +9294,7 @@ bool VmHandleInvokeCustomRange(VmContext &ctx, const VmpInstruction &insn) {
     int argCount = insn.registers[1];
 
     if (argCount < 0 || startReg + argCount > VM_MAX_REGISTERS) {
-        LOGE("INVOKE_CUSTOM_RANGE 参数范围超出寄存器边�?start=%d count=%d",
+        LOGE("INVOKE_CUSTOM_RANGE 参数范围超出寄存器边界 start=%d count=%d",
              startReg, argCount);
         return false;
     }
@@ -9210,7 +9302,7 @@ bool VmHandleInvokeCustomRange(VmContext &ctx, const VmpInstruction &insn) {
     jclass objectClass = ctx.env->FindClass("java/lang/Object");
     if (ctx.env->ExceptionCheck() || objectClass == nullptr) {
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_CUSTOM_RANGE 找不到Object�?);
+        LOGE("INVOKE_CUSTOM_RANGE 找不到Object类");
         return false;
     }
 
@@ -9249,14 +9341,14 @@ bool VmHandleInvokeCustomRange(VmContext &ctx, const VmpInstruction &insn) {
 
     if (ctx.env->ExceptionCheck() || mid == nullptr) {
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_CUSTOM_RANGE 找不到辅助方�?invokeCustom");
+        LOGE("INVOKE_CUSTOM_RANGE 找不到辅助方法 invokeCustom");
         return false;
     }
 
     jstring callSiteText = ctx.env->NewStringUTF(insn.referenceData.c_str());
     if (ctx.env->ExceptionCheck() || callSiteText == nullptr) {
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_CUSTOM_RANGE 创建CallSite字符串失�?);
+        LOGE("INVOKE_CUSTOM_RANGE 创建CallSite字符串失败");
         return false;
     }
 
@@ -9280,11 +9372,11 @@ bool VmHandleInvokeCustomRange(VmContext &ctx, const VmpInstruction &insn) {
 }
 
 //指令 CONST_METHOD_HANDLE (0xFE)
-//�?MethodHandle 常量加载到寄存器
+//将 MethodHandle 常量加载到寄存器
 //referenceData 格式：handleType|refType|owner->name:signature
 bool VmHandleConstMethodHandle(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST_METHOD_HANDLE 寄存器数量不�?);
+        LOGE("CONST_METHOD_HANDLE 寄存器数量不足");
         return false;
     }
 
@@ -9296,7 +9388,7 @@ bool VmHandleConstMethodHandle(VmContext &ctx, const VmpInstruction &insn) {
     // 解析 handleType|refType|methodRef
     int pipe1 = insn.referenceData.find('|');
     if (pipe1 < 0) {
-        LOGE("CONST_METHOD_HANDLE 引用格式错误�?s", insn.referenceData.c_str());
+        LOGE("CONST_METHOD_HANDLE 引用格式错误：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -9305,7 +9397,7 @@ bool VmHandleConstMethodHandle(VmContext &ctx, const VmpInstruction &insn) {
 
     int pipe2 = rest.find('|');
     if (pipe2 < 0) {
-        LOGE("CONST_METHOD_HANDLE 引用格式错误�?s", insn.referenceData.c_str());
+        LOGE("CONST_METHOD_HANDLE 引用格式错误：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -9315,7 +9407,7 @@ bool VmHandleConstMethodHandle(VmContext &ctx, const VmpInstruction &insn) {
     // 解析方法引用：owner->name:signature
     size_t arrow = methodRef.find("->");
     if (arrow == std::string::npos) {
-        LOGE("CONST_METHOD_HANDLE 方法引用格式错误�?s", methodRef.c_str());
+        LOGE("CONST_METHOD_HANDLE 方法引用格式错误：%s", methodRef.c_str());
         return false;
     }
 
@@ -9323,14 +9415,14 @@ bool VmHandleConstMethodHandle(VmContext &ctx, const VmpInstruction &insn) {
     std::string right = methodRef.substr(arrow + 2);
     size_t colon = right.find(':');
     if (colon == std::string::npos) {
-        LOGE("CONST_METHOD_HANDLE 方法签名格式错误�?s", right.c_str());
+        LOGE("CONST_METHOD_HANDLE 方法签名格式错误：%s", right.c_str());
         return false;
     }
 
     std::string methodName = right.substr(0, colon);
     std::string methodSignature = right.substr(colon + 1);
 
-    // �?dex 类型名转�?Java 类名
+    // 将 dex 类型名转为 Java 类名
     std::string javaOwner = owner;
     if (javaOwner.size() > 2 && javaOwner[0] == 'L' && javaOwner.back() == ';') {
         javaOwner = javaOwner.substr(1, javaOwner.size() - 2);
@@ -9342,11 +9434,11 @@ bool VmHandleConstMethodHandle(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = ctx.env->FindClass(javaOwner.c_str());
     if (ctx.env->ExceptionCheck() || cls == nullptr) {
         ctx.env->ExceptionClear();
-        LOGE("CONST_METHOD_HANDLE 找不到类�?s", javaOwner.c_str());
+        LOGE("CONST_METHOD_HANDLE 找不到类：%s", javaOwner.c_str());
         return false;
     }
 
-    // 根据 handleType 选择不同�?MethodHandle 获取方式
+    // 根据 handleType 选择不同的 MethodHandle 获取方式
     jobject methodHandle = nullptr;
 
     if (refType == 4) {
@@ -9403,7 +9495,7 @@ bool VmHandleConstMethodHandle(VmContext &ctx, const VmpInstruction &insn) {
             methodHandle = ctx.env->NewObject(methodHandleClass, ctor, reinterpret_cast<jlong>(fid));
         }
         else {
-            // handleType 5/6/7/8 是方法引用，�?Method 模拟
+            // handleType 5/6/7/8 是方法引用，用 Method 模拟
             bool isStatic = (handleType == 5 || handleType == 6);
             jmethodID mid;
             if (isStatic) {
@@ -9418,11 +9510,11 @@ bool VmHandleConstMethodHandle(VmContext &ctx, const VmpInstruction &insn) {
                 return false;
             }
 
-            // �?Method 对象包装作为 MethodHandle 的替�?
+            // 用 Method 对象包装作为 MethodHandle 的替代
             methodHandle = ctx.env->ToReflectedMethod(cls, mid, isStatic);
         }
     } else {
-        LOGE("CONST_METHOD_HANDLE 不支持的引用类型�?d", refType);
+        LOGE("CONST_METHOD_HANDLE 不支持的引用类型：%d", refType);
         return false;
     }
 
@@ -9441,11 +9533,11 @@ bool VmHandleConstMethodHandle(VmContext &ctx, const VmpInstruction &insn) {
 }
 
 //指令 CONST_METHOD_TYPE (0xFF)
-//�?MethodType 常量加载到寄存器
-//referenceData 格式：方法原型签名，�?(II)Ljava/lang/String;
+//将 MethodType 常量加载到寄存器
+//referenceData 格式：方法原型签名，如 (II)Ljava/lang/String;
 bool VmHandleConstMethodType(VmContext &ctx, const VmpInstruction &insn) {
     if (insn.registers.size() < 1) {
-        LOGE("CONST_METHOD_TYPE 寄存器数量不�?);
+        LOGE("CONST_METHOD_TYPE 寄存器数量不足");
         return false;
     }
 
@@ -9458,7 +9550,7 @@ bool VmHandleConstMethodType(VmContext &ctx, const VmpInstruction &insn) {
     jclass methodTypeClass = ctx.env->FindClass("java/lang/invoke/MethodType");
     if (ctx.env->ExceptionCheck() || methodTypeClass == nullptr) {
         ctx.env->ExceptionClear();
-        LOGE("CONST_METHOD_TYPE 找不�?MethodType �?);
+        LOGE("CONST_METHOD_TYPE 找不到 MethodType 类");
         return false;
     }
 
@@ -9469,11 +9561,11 @@ bool VmHandleConstMethodType(VmContext &ctx, const VmpInstruction &insn) {
     );
     if (ctx.env->ExceptionCheck() || fromMethodType == nullptr) {
         ctx.env->ExceptionClear();
-        // 尝试从描述符解析的另一种方�?
+        // 尝试从描述符解析的另一种方式
         jmethodID ctor = ctx.env->GetMethodID(methodTypeClass, "<init>", "(Ljava/lang/String;)V");
         if (ctx.env->ExceptionCheck() || ctor == nullptr) {
             ctx.env->ExceptionClear();
-            LOGE("CONST_METHOD_TYPE 找不�?MethodType 构造方�?);
+            LOGE("CONST_METHOD_TYPE 找不到 MethodType 构造方法");
             return false;
         }
 
@@ -9483,7 +9575,7 @@ bool VmHandleConstMethodType(VmContext &ctx, const VmpInstruction &insn) {
 
         if (ctx.env->ExceptionCheck()) {
             ctx.env->ExceptionClear();
-            LOGE("CONST_METHOD_TYPE 创建失败�?s", insn.referenceData.c_str());
+            LOGE("CONST_METHOD_TYPE 创建失败：%s", insn.referenceData.c_str());
             return false;
         }
 
@@ -9499,7 +9591,7 @@ bool VmHandleConstMethodType(VmContext &ctx, const VmpInstruction &insn) {
 
     if (ctx.env->ExceptionCheck() || methodType == nullptr) {
         ctx.env->ExceptionClear();
-        LOGE("CONST_METHOD_TYPE 创建失败�?s", insn.referenceData.c_str());
+        LOGE("CONST_METHOD_TYPE 创建失败：%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -9514,7 +9606,7 @@ bool VmHandleConstMethodType(VmContext &ctx, const VmpInstruction &insn) {
 //==================================================================================
 //==================================================================================
 
-//==================================================================================指令�?
+//==================================================================================指令区
 
 
 
@@ -9525,12 +9617,12 @@ bool VmHandleInvokeDirectRange(VmContext &ctx, const VmpInstruction &insn) {
     std::string signature;
 
     if (!parseMethodReference(insn.referenceData, classType, methodName, signature)) {
-        LOGE("INVOKE_DIRECT_RANGE 方法引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_DIRECT_RANGE 方法引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     if (insn.registers.empty()) {
-        LOGE("INVOKE_DIRECT_RANGE 寄存器为�?);
+        LOGE("INVOKE_DIRECT_RANGE 寄存器为空");
         return false;
     }
 
@@ -9545,7 +9637,7 @@ bool VmHandleInvokeDirectRange(VmContext &ctx, const VmpInstruction &insn) {
     jclass cls = findVmClassForObject(ctx.env, obj, classType);
 
     if (cls == nullptr) {
-        LOGE("INVOKE_DIRECT_RANGE 找不到类�?s", classType.c_str());
+        LOGE("INVOKE_DIRECT_RANGE 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -9574,10 +9666,9 @@ bool VmHandleInvokeDirectRange(VmContext &ctx, const VmpInstruction &insn) {
         }
     }
 
-    std::vector<std::string> paramTypes;
     std::vector<std::string> paramTypes = parseMethodParameterTypes(signature);
     if (paramTypes.empty() && !signature.empty()) {
-        LOGE("INVOKE_DIRECT_RANGE 参数签名解析失败�?s", signature.c_str());
+        LOGE("INVOKE_DIRECT_RANGE 参数签名解析失败：%s", signature.c_str());
         return false;
     }
 
@@ -9588,7 +9679,7 @@ bool VmHandleInvokeDirectRange(VmContext &ctx, const VmpInstruction &insn) {
 
     for (int i = 0; i < static_cast<int>(paramTypes.size()); i++) {
         if (regIndex >= static_cast<int>(insn.registers.size())) {
-            LOGE("INVOKE_DIRECT_RANGE 参数寄存器不�?index=%d", i);
+            LOGE("INVOKE_DIRECT_RANGE 参数寄存器不足 index=%d", i);
             return false;
         }
 
@@ -9671,14 +9762,14 @@ bool VmHandleInvokeDirectRange(VmContext &ctx, const VmpInstruction &insn) {
     if (ctx.env->ExceptionCheck()) {
         ctx.currentException = ctx.env->ExceptionOccurred();
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_DIRECT_RANGE 调用失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_DIRECT_RANGE 调用失败：%s", insn.referenceData.c_str());
         if (VmContext_JumpToExceptionHandler(ctx, insn.codeUnitOffset)) {
             return true;
         }
         return false;
     }
 
-    //LOGI("INVOKE_DIRECT_RANGE 调用完成�?s", insn.referenceData.c_str());
+    //LOGI("INVOKE_DIRECT_RANGE 调用完成：%s", insn.referenceData.c_str());
 
     ctx.pc++;
     return true;
@@ -9692,14 +9783,14 @@ bool VmHandleInvokeStatic(VmContext &ctx, const VmpInstruction &insn) {
     std::string signature;
 
     if (!parseMethodReference(insn.referenceData, classType, methodName, signature)) {
-        LOGE("INVOKE_STATIC 方法引用解析失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_STATIC 方法引用解析失败：%s", insn.referenceData.c_str());
         return false;
     }
 
     jclass cls = findVmClassForStatic(ctx.env, classType);
 
     if (cls == nullptr) {
-        LOGE("INVOKE_STATIC 找不到类�?s", classType.c_str());
+        LOGE("INVOKE_STATIC 找不到类：%s", classType.c_str());
         return false;
     }
 
@@ -9714,7 +9805,7 @@ bool VmHandleInvokeStatic(VmContext &ctx, const VmpInstruction &insn) {
     std::string returnType = parseMethodReturnType(signature);
 
     if (insn.registers.size() < paramTypes.size()) {
-        LOGE("INVOKE_STATIC 参数寄存器数量不�?ref=%s", insn.referenceData.c_str());
+        LOGE("INVOKE_STATIC 参数寄存器数量不足 ref=%s", insn.referenceData.c_str());
         return false;
     }
 
@@ -9791,14 +9882,14 @@ bool VmHandleInvokeStatic(VmContext &ctx, const VmpInstruction &insn) {
     if (ctx.env->ExceptionCheck()) {
         ctx.currentException = ctx.env->ExceptionOccurred();
         ctx.env->ExceptionClear();
-        LOGE("INVOKE_STATIC 调用失败�?s", insn.referenceData.c_str());
+        LOGE("INVOKE_STATIC 调用失败：%s", insn.referenceData.c_str());
         if (VmContext_JumpToExceptionHandler(ctx, insn.codeUnitOffset)) {
             return true;
         }
         return false;
     }
 
-    //LOGI("INVOKE_STATIC 调用完成�?s", insn.referenceData.c_str());
+    //LOGI("INVOKE_STATIC 调用完成：%s", insn.referenceData.c_str());
 
     ctx.pc++;
     return true;

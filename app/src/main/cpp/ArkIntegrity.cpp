@@ -1,15 +1,20 @@
 #include "ArkIntegrity.h"
 #include "ArkAntiDebug.h"
+#include "sha256.h"
 
 #include <string>
 #include <android/log.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include <openssl/sha.h>
+#include <zlib.h>
 
 #define LOG_TAG "ArkVMP_Integrity"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+// ==================== SO 自校验状态（由 ArkVMP.cpp 提供） ====================
+extern uLong g_selfCrc32;
+extern bool g_selfCrcValid;
 
 // ==================== DEX 完整性校验（魔改#10） ====================
 static unsigned char g_dexSha256[32];
@@ -95,8 +100,8 @@ bool computeVmpDexSha256(JNIEnv *env, unsigned char *outSha256) {
     }
 
     // 读取流并计算 SHA256
-    SHA256_CTX shaCtx;
-    SHA256_Init(&shaCtx);
+    sha256_ctx shaCtx;
+    sha256_init(&shaCtx);
 
     jclass isClass = env->GetObjectClass(is);
     jmethodID midRead = env->GetMethodID(isClass, "read", "([B)I");
@@ -111,14 +116,13 @@ bool computeVmpDexSha256(JNIEnv *env, unsigned char *outSha256) {
     while ((bytesRead = env->CallIntMethod(is, midRead, buf)) > 0) {
         jbyte *bytes = env->GetByteArrayElements(buf, nullptr);
         if (bytes != nullptr) {
-            SHA256_Update(&shaCtx, (unsigned char *)bytes, bytesRead);
-            env->ReleaseByteArrayElements(buf, bytes, JNI_ABORT);
+            sha256_update(&shaCtx, (unsigned char *)bytes, bytesRead);            env->ReleaseByteArrayElements(buf, bytes, JNI_ABORT);
         }
     }
 
     env->DeleteLocalRef(buf);
     env->DeleteLocalRef(is);
-    SHA256_Final(outSha256, &shaCtx);
+    sha256_final(&shaCtx, outSha256);
 
     return true;
 }

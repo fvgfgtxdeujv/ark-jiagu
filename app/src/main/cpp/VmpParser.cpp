@@ -1,9 +1,8 @@
 #include "VmpParser.h"
+#include "sha256.h"
 
 #include <android/log.h>
 #include <string.h>
-#include <openssl/hmac.h>
-#include <openssl/sha.h>
 
 #define LOG_TAG "ArkVMP_VmpParser"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -209,8 +208,9 @@ static long rotateLongDecrypt(long value, int seed) {
     // 逆变换：先 XOR mask
     value ^= ((long)seed << 16) | (seed & 0xFFFFL);
     value &= 0xFFFFFFFFL;
-    // 逆旋转
-    long rotated = (value >>> shift) | (value << (32 - shift));
+    // 逆旋转（使用无符号逻辑右移）
+    unsigned long uv = (unsigned long)value;
+    long rotated = (long)((uv >> shift) | (uv << (32 - shift)));
     return rotated & 0xFFFFFFFFL;
 }
 
@@ -219,8 +219,9 @@ static int rotateIntDecrypt(int value, int seed) {
     if (shift == 32) shift = 0;
     // 逆变换：先 XOR mask
     value ^= (seed & 0xFFFF);
-    // 逆旋转
-    int rotated = (value >>> shift) | (value << (32 - shift));
+    // 逆旋转（使用无符号逻辑右移）
+    unsigned int uv = (unsigned int)value;
+    int rotated = (int)((uv >> shift) | (uv << (32 - shift)));
     return rotated;
 }
 // ====================================================
@@ -689,7 +690,7 @@ static bool parseVmpHeaderAndIndex() {
         //LOGI("methodIndex[%d] methodId=%d offset=%lld size=%d",i,methodId,static_cast<long long>(offset),size);
     }
 
-    g_bin.methodCache.clear();
+    g_bin.method_cache.clear();
 
     // ==================== #5 HMAC-SHA256 跳过 ====================
     // 记录 HMAC 位置（32 字节），暂不校验（需要完整文件数据）
@@ -703,7 +704,6 @@ static bool parseVmpHeaderAndIndex() {
     // ==================== #7 索引表自校验 ====================
     // 索引表中的 offset/size 用 XOR 混淆，校验和绑定到 opcodeMap
     // 运行时读取时做简单校验
-    int xormask = (static_cast<int>(g_bin.vmOpcodeMap.size()) * 31 + 17) & 0xFFFFFFFF;
     for (auto &kv : g_bin.methodIndexMap) {
         VmpMethodIndex &index = kv.second;
         // 验证校验和
@@ -759,14 +759,11 @@ bool VmpParser_EnsureLoaded(JNIEnv *env, jobject context) {
 
         // 计算 HMAC：密钥 = opcodeKey，数据 = 从 magic 到 HMAC 前的所有数据
         unsigned char computedHmac[32];
-        unsigned int hmacLen = 0;
 
-        HMAC(EVP_sha256(),
-             g_bin.opcodeKey, 16,
-             g_bin.rawData.data(), g_bin.hmacOffset,
-             computedHmac, &hmacLen);
-
-        if (hmacLen == 32) {
+        hmac_sha256(g_bin.opcodeKey, 16,
+                    g_bin.rawData.data(), g_bin.hmacOffset,
+                    computedHmac);
+        {
             bool hmacMatch = true;
             for (int i = 0; i < 32; i++) {
                 if (storedHmac[i] != computedHmac[i]) {
@@ -803,8 +800,8 @@ bool VmpParser_FindMethod(
         return false;
     }
 
-    auto cacheIt = g_bin.methodCache.find(methodId);
-    if (cacheIt != g_bin.methodCache.end()) {
+    auto cacheIt = g_bin.method_cache.find(methodId);
+    if (cacheIt != g_bin.method_cache.end()) {
         outMethod = cacheIt->second;
         //LOGI("methodId=%d 命中方法缓存", methodId);
         return true;
@@ -969,6 +966,9 @@ bool VmpParser_FindMethod(
     }
     // ====================================================
 
+    int tryBlockCount = 0;
+    if (!readIntLE(g_bin.rawData, pos, tryBlockCount)) return false;
+
     for (int i = 0; i < tryBlockCount; i++) {
         VmpTryBlock tryBlock;
 
@@ -1035,7 +1035,7 @@ bool VmpParser_FindMethod(
         //LOGI("methodId=%d 解析完成，pos和end有偏差 pos=%d end=%d",methodId,static_cast<int>(pos),static_cast<int>(end));
     }
 
-    g_bin.methodCache[methodId] = method;
+    g_bin.method_cache[methodId] = method;
     outMethod = method;
 
     //LOGI("methodId=%d 已从内存bin解析并加入缓存", methodId);

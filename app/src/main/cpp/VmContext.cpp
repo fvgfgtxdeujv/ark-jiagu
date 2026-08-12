@@ -96,7 +96,7 @@ bool VmContext_Init(
 
     int paramBase = method.registerCount - paramRegisterCount;
     if (paramBase < 0) {
-        //LOGE("参数寄存器计算错�?registerCount=%d paramRegisterCount=%d",method.registerCount,paramRegisterCount);
+        //LOGE("参数寄存器计算错误 registerCount=%d paramRegisterCount=%d",method.registerCount,paramRegisterCount);
         return false;
     }
 

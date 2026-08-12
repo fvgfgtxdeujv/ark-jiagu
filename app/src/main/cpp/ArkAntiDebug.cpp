@@ -6,6 +6,8 @@
 #include <android/log.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/syscall.h>
+#include <sys/ptrace.h>
 
 #define LOG_TAG "ArkVMP_AntiDebug"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -15,28 +17,8 @@
 // 如果进程已经被调试器 attach，ptrace(PTRACE_TRACEME) 会失败
 static bool checkPtrace() {
     // ptrace(PTRACE_TRACEME, 0, 0, 0) 对已经被 trace 的进程返回 -1
-    // 直接用 inline asm 调用，避免链接 libc 的 ptrace 符号被检测
-    long result = -1;
-#if defined(__arm__) || defined(__aarch64__)
-    // ARM/ARM64: svc 0 或直接调用 ptrace
-    // 用 syscall 方式
-    register long x8 __asm__("x8") = 101; // __NR_ptrace on ARM64
-    register long x0 __asm__("x0") = 0;   // PTRACE_TRACEME
-    register long x1 __asm__("x1") = 0;
-    register long x2 __asm__("x2") = 0;
-    register long x3 __asm__("x3") = 0;
-    __asm__ volatile("svc 0" : "=r"(x0) : "r"(x8), "r"(x0), "r"(x1), "r"(x2), "r"(x3) : "memory");
-    result = x0;
-#elif defined(__i386__) || defined(__x86_64__)
-    // x86/x64
-    register long rax __asm__("rax") = 26; // __NR_ptrace on x86_64
-    register long rdi __asm__("rdi") = 0;  // PTRACE_TRACEME
-    register long rsi __asm__("rsi") = 0;
-    register long rdx __asm__("rdx") = 0;
-    register long r10 __asm__("r10") = 0;
-    __asm__ volatile("syscall" : "=r"(rax) : "r"(rax), "r"(rdi), "r"(rsi), "r"(rdx), "r"(r10) : "rcx", "r11", "memory");
-    result = rax;
-#endif
+    // 直接用 syscall() 绕过 libc 的 ptrace 包装符号
+    long result = syscall(SYS_ptrace, PTRACE_TRACEME, 0, 0, 0);
     return result < 0;
 }
 

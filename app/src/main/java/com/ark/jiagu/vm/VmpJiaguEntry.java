@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import com.android.tools.smali.dexlib2.AccessFlags;
+import com.android.tools.smali.dexlib2.Opcode;
 import com.android.tools.smali.dexlib2.Opcodes;
 import com.android.tools.smali.dexlib2.iface.ClassDef;
 import com.android.tools.smali.dexlib2.iface.DexFile;
@@ -178,6 +179,8 @@ public class VmpJiaguEntry {
                     // ==================== 寄存器别名（魔改#7） ====================
                     // 生成随机偏移量 (0~7)，加到所有寄存器索引上
                     // 使每次加固后的寄存器映射不同，增加动态分析难度
+                    Random fakeRandom = new Random(System.currentTimeMillis()
+                            ^ System.identityHashCode(method));
                     int aliasOffset = fakeRandom.nextInt(8);
                     block.registerAliasOffset = aliasOffset;
                     block.registerCount = impl.getRegisterCount() + aliasOffset;
@@ -193,7 +196,6 @@ public class VmpJiaguEntry {
                     }
 
                     int codeUnitOffset = 0;
-                    Random fakeRandom = new Random(System.currentTimeMillis() ^ instruction.hashCode());
 
                     for (Instruction instruction : impl.getInstructions()) {
                         ExtractInstruction extracted = buildExtractInstruction(

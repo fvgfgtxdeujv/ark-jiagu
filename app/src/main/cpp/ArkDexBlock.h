@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <cstdint>
+#include <jni.h>
 
 // Block info struct - only records encrypted dex block metadata, not plaintext dex
 struct ArkDexBlockInfo {

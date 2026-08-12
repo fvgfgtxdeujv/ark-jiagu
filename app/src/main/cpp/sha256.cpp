@@ -1,14 +1,7 @@
-#include <stdint.h>
-#include <stddef.h>
+#include "sha256.h"
+
 #include <string.h>
 #include <stdio.h>
-
-typedef struct {
-    uint32_t state[8];
-    uint64_t bitlen;
-    uint8_t data[64];
-    uint32_t datalen;
-} sha256_ctx;
 
 static const uint32_t k[64] = {
         0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,
@@ -77,7 +70,7 @@ static void sha256_transform(sha256_ctx *ctx, const uint8_t data[]) {
     ctx->state[7] += h;
 }
 
-static void sha256_init(sha256_ctx *ctx) {
+void sha256_init(sha256_ctx *ctx) {
     ctx->datalen = 0;
     ctx->bitlen = 0;
     ctx->state[0] = 0x6a09e667;
@@ -90,7 +83,7 @@ static void sha256_init(sha256_ctx *ctx) {
     ctx->state[7] = 0x5be0cd19;
 }
 
-static void sha256_update(sha256_ctx *ctx, const uint8_t *data, size_t len) {
+void sha256_update(sha256_ctx *ctx, const uint8_t *data, size_t len) {
     for (size_t i = 0; i < len; ++i) {
         ctx->data[ctx->datalen++] = data[i];
         if (ctx->datalen == 64) {
@@ -101,7 +94,7 @@ static void sha256_update(sha256_ctx *ctx, const uint8_t *data, size_t len) {
     }
 }
 
-static void sha256_final(sha256_ctx *ctx, uint8_t hash[32]) {
+void sha256_final(sha256_ctx *ctx, uint8_t hash[32]) {
     uint32_t i = ctx->datalen;
 
     if (ctx->datalen < 56) {
@@ -156,5 +149,41 @@ void sha256_hex(const void *data, size_t len, char out[65]) {
         sprintf(out + i * 2, "%02x", hash[i]);
     }
     out[64] = 0;
+}
+
+void hmac_sha256(const uint8_t *key, size_t keyLen,
+                 const uint8_t *data, size_t len,
+                 uint8_t out[32]) {
+    uint8_t k0[64];
+    memset(k0, 0, sizeof(k0));
+
+    if (keyLen > 64) {
+        sha256_ctx ctx;
+        sha256_init(&ctx);
+        sha256_update(&ctx, key, keyLen);
+        sha256_final(&ctx, k0);
+    } else {
+        memcpy(k0, key, keyLen);
+    }
+
+    uint8_t ipad[64];
+    uint8_t opad[64];
+    for (int i = 0; i < 64; ++i) {
+        ipad[i] = k0[i] ^ 0x36;
+        opad[i] = k0[i] ^ 0x5c;
+    }
+
+    sha256_ctx ctx;
+    uint8_t inner[32];
+
+    sha256_init(&ctx);
+    sha256_update(&ctx, ipad, sizeof(ipad));
+    sha256_update(&ctx, data, len);
+    sha256_final(&ctx, inner);
+
+    sha256_init(&ctx);
+    sha256_update(&ctx, opad, sizeof(opad));
+    sha256_update(&ctx, inner, sizeof(inner));
+    sha256_final(&ctx, out);
 }
 
