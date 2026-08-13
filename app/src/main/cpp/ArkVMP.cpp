@@ -142,11 +142,71 @@ extern "C" void ArkVMP_SetContext(JNIEnv *env, jobject context) {
 }
 
 // ==================== 第二代嵌入式方案 ====================
-// VMP 类名固定为 com/ark/safe/VMP
-// 不再通过 System.getProperty("ark") 查找壳类名
-// VMP 类通过 <clinit> 中的 System.loadLibrary 自动触发 SO 加载
+// VMP 类名默认为 com/ark/safe/VMP，实际类名由 VMP 类 <clinit> 通过
+// System.setProperty("ark", vmpClassName) 写入，JNI_OnLoad 时从属性读取，
+// 以兼容用户自定义的 VMP 类名
 // ==========================================================
-static const char *VMP_CLASS_NAME = "com/ark/safe/VMP";
+static const char *DEFAULT_VMP_CLASS_NAME = "com/ark/safe/VMP";
+
+static std::string vmpJstringToString(JNIEnv *env, jstring str) {
+    if (str == nullptr) {
+        return "";
+    }
+
+    const char *chars = env->GetStringUTFChars(str, nullptr);
+    if (chars == nullptr) {
+        return "";
+    }
+
+    std::string result(chars);
+    env->ReleaseStringUTFChars(str, chars);
+    return result;
+}
+
+static void vmpDotToSlash(std::string &name) {
+    for (size_t i = 0; i < name.length(); i++) {
+        if (name[i] == '.') {
+            name[i] = '/';
+        }
+    }
+}
+
+static std::string getVmpClassNameFromProperty(JNIEnv *env) {
+    jclass clsSystem = env->FindClass("java/lang/System");
+    if (clsSystem == nullptr) {
+        env->ExceptionClear();
+        return "";
+    }
+
+    jmethodID midGetProperty = env->GetStaticMethodID(
+            clsSystem,
+            "getProperty",
+            "(Ljava/lang/String;)Ljava/lang/String;"
+    );
+
+    if (midGetProperty == nullptr) {
+        env->ExceptionClear();
+        return "";
+    }
+
+    jstring key = env->NewStringUTF("ark");
+
+    jstring value = (jstring) env->CallStaticObjectMethod(
+            clsSystem,
+            midGetProperty,
+            key
+    );
+
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        return "";
+    }
+
+    std::string className = vmpJstringToString(env, value);
+    vmpDotToSlash(className);
+
+    return className;
+}
 
 static void native_callVoid(JNIEnv *env, jclass clazz, jint methodId, jobject thiz, jobjectArray args, jboolean isDebuggable) {
     //LOGI("callVoid methodId=%d", methodId);
@@ -220,16 +280,21 @@ extern "C" jint ArkVMP_OnLoad(JavaVM *vm) {
         return JNI_ERR;
     }
 
-    // 第二代嵌入式方案：直接 FindClass VMP 类
+    // 第二代嵌入式方案：VMP 类名从 System property("ark") 读取，回落默认值
     // VMP 类通过 <clinit> 中的 System.loadLibrary 触发本 SO 加载
-    jclass vmpClass = env->FindClass(VMP_CLASS_NAME);
+    std::string vmpClassName = getVmpClassNameFromProperty(env);
+    if (vmpClassName.empty()) {
+        vmpClassName = DEFAULT_VMP_CLASS_NAME;
+    }
+
+    jclass vmpClass = env->FindClass(vmpClassName.c_str());
     if (vmpClass == nullptr) {
         env->ExceptionClear();
-        //LOGE("找不到VMP类：%s", VMP_CLASS_NAME);
+        //LOGE("找不到VMP类：%s", vmpClassName.c_str());
         return JNI_ERR;
     }
 
-    //LOGI("ArkVMP 开始注册call方法到VMP类：%s", VMP_CLASS_NAME);
+    //LOGI("ArkVMP 开始注册call方法到VMP类：%s", vmpClassName.c_str());
 
     int methodCount = sizeof(g_methods) / sizeof(g_methods[0]);
 

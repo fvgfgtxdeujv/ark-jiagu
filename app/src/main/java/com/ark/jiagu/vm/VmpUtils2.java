@@ -96,9 +96,35 @@ public class VmpUtils2 {
         String cleanClassName = fullClassName.trim();
         String classType = "L" + cleanClassName.replace('.', '/') + ";";
 
-        // ---------- <clinit>：System.loadLibrary(soName) ----------
+        // ---------- <clinit>：System.setProperty("ark", vmpClassName) 再 System.loadLibrary(soName) ----------
+        // 先写入属性，让 SO 的 JNI_OnLoad 能通过 System.getProperty("ark") 拿到真实 VMP 类名
         List<com.android.tools.smali.dexlib2.iface.instruction.Instruction> clinitInstructions =
                 Arrays.asList(
+                        new ImmutableInstruction21c(
+                                Opcode.CONST_STRING,
+                                0,
+                                new ImmutableStringReference("ark")
+                        ),
+                        new ImmutableInstruction21c(
+                                Opcode.CONST_STRING,
+                                1,
+                                new ImmutableStringReference(cleanClassName)
+                        ),
+                        new ImmutableInstruction35c(
+                                Opcode.INVOKE_STATIC,
+                                2,
+                                0,
+                                1,
+                                0,
+                                0,
+                                0,
+                                new ImmutableMethodReference(
+                                        "Ljava/lang/System;",
+                                        "setProperty",
+                                        Arrays.asList("Ljava/lang/String;", "Ljava/lang/String;"),
+                                        "Ljava/lang/String;"
+                                )
+                        ),
                         new ImmutableInstruction21c(
                                 Opcode.CONST_STRING,
                                 0,
@@ -124,7 +150,7 @@ public class VmpUtils2 {
 
         com.android.tools.smali.dexlib2.iface.MethodImplementation clinitImpl =
                 new ImmutableMethodImplementation(
-                        1,
+                        2,
                         clinitInstructions,
                         Collections.emptyList(),
                         Collections.emptyList()

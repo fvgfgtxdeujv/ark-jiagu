@@ -193,8 +193,9 @@ JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
     }
 
     if (!registerNativeMethods(env)) {
-        LOGE("注册方法失败");
-        return JNI_ERR;
+        // 第二代嵌入式方案不生成 StubApp，attachBaseContext 注册失败属正常，
+        // 不能因此中断 SO 加载，VMP call 方法的注册由 ArkVMP_OnLoad 负责
+        //LOGI("attachBaseContext 注册失败（忽略，继续注册 VMP call 方法）");
     }
 
     if (ArkVMP_OnLoad(vm) == JNI_ERR) {
