@@ -202,13 +202,28 @@ public class VmpUtils {
             return false;
         }
 
+        if (!matchPart(rule.methodName, methodName)) {
+            return false;
+        }
+
         int lastDot = javaClassName.lastIndexOf('.');
         String pkg = lastDot >= 0 ? javaClassName.substring(0, lastDot) : "";
         String cls = lastDot >= 0 ? javaClassName.substring(lastDot + 1) : javaClassName;
 
-        return matchPart(rule.packageName, pkg)
-                && matchPart(rule.className, cls)
-                && matchPart(rule.methodName, methodName);
+        // 类名通配：精确匹配包，任意类
+        if ("*".equals(rule.className)) {
+            return matchPart(rule.packageName, pkg);
+        }
+
+        // 类名非通配：按类前缀匹配，支持包下多级子包
+        // 例如规则 com.f0x1d.logfox.presentation.ui.activity.*
+        // 可匹配 com.f0x1d.logfox.presentation.ui.activity 及其子包下的所有类
+        String rulePrefix = rule.packageName.isEmpty()
+                ? rule.className
+                : rule.packageName + "." + rule.className;
+
+        return javaClassName.equals(rulePrefix)
+                || javaClassName.startsWith(rulePrefix + ".");
     }
 
     static boolean matchPart(String rulePart, String value) {
