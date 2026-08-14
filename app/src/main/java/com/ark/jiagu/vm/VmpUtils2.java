@@ -234,7 +234,7 @@ public class VmpUtils2 {
                                 new ImmutableTypeReference("android/app/ActivityThread")
                         ),
                         new ImmutableInstruction35c(
-                                Opcode.INVOKE_STATIC, 1, 0, 0, 0, 0, 0,
+                                Opcode.INVOKE_STATIC, 0, 0, 0, 0, 0, 0,
                                 new ImmutableMethodReference(
                                         "android/app/ActivityThread",
                                         "currentApplication",
@@ -252,7 +252,7 @@ public class VmpUtils2 {
                         // application.getPackageManager()
                         new ImmutableInstruction12x(Opcode.MOVE_OBJECT, 3, 2),
                         new ImmutableInstruction35c(
-                                Opcode.INVOKE_VIRTUAL, 4, 3, 0, 0, 0, 0,
+                                Opcode.INVOKE_VIRTUAL, 1, 3, 0, 0, 0, 0,
                                 new ImmutableMethodReference(
                                         "android/content/Context",
                                         "getPackageManager",
@@ -263,7 +263,7 @@ public class VmpUtils2 {
                         new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 4),
                         // application.getPackageName()
                         new ImmutableInstruction35c(
-                                Opcode.INVOKE_VIRTUAL, 5, 3, 0, 0, 0, 0,
+                                Opcode.INVOKE_VIRTUAL, 1, 3, 0, 0, 0, 0,
                                 new ImmutableMethodReference(
                                         "android/content/Context",
                                         "getPackageName",
@@ -274,7 +274,7 @@ public class VmpUtils2 {
                         new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 5),
                         // pm.getApplicationInfo(packageName, 0)
                         new ImmutableInstruction35c(
-                                Opcode.INVOKE_VIRTUAL, 6, 4, 5, 0, 0, 0,
+                                Opcode.INVOKE_VIRTUAL, 3, 4, 5, 0, 0, 0,
                                 new ImmutableMethodReference(
                                         "android/content/pm/PackageManager",
                                         "getApplicationInfo",
@@ -285,7 +285,7 @@ public class VmpUtils2 {
                         new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 6),
                         // appInfo.flags
                         new ImmutableInstruction35c(
-                                Opcode.INVOKE_VIRTUAL, 0, 6, 0, 0, 0, 0,
+                                Opcode.INVOKE_VIRTUAL, 1, 6, 0, 0, 0, 0,
                                 new ImmutableMethodReference(
                                         "android/content/pm/ApplicationInfo",
                                         "getFlags",
