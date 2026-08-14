@@ -296,7 +296,7 @@ public class VmpUtils2 {
                         new ImmutableInstruction11x(Opcode.MOVE_RESULT, 0),
                         // flags & 0x02 (FLAG_DEBUGGABLE)
                         new ImmutableInstruction22b(Opcode.AND_INT_LIT8, 0, 0, 0x02),
-                        new ImmutableInstruction10x(Opcode.RETURN)
+                        new ImmutableInstruction11x(Opcode.RETURN, 0)
                 );
 
         com.android.tools.smali.dexlib2.iface.MethodImplementation isDebuggableImpl =
