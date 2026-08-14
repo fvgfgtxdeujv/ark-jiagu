@@ -95,14 +95,14 @@ public class VmpJiaguEntry {
         void log(String msg);
     }
     public static void extractMethodsToBin(File dexDir, String... methodRules) throws IOException {
-        extractMethodsToBin(dexDir, null, methodRules);
+        extractMethodsToBin(dexDir, null, true, methodRules);
     }
 
     /**
      * :TODO
      * 抽取方法到bin
      * */
-    public static void extractMethodsToBin(File dexDir, LogCallback logCallback, String... methodRules) throws IOException {
+    public static void extractMethodsToBin(File dexDir, LogCallback logCallback, boolean skipOnError, String... methodRules) throws IOException {
         if (dexDir == null || !dexDir.isDirectory()) {
             throw new IOException("dex目录不存在");
         }
@@ -150,6 +150,7 @@ public class VmpJiaguEntry {
                 String javaClassName = dexTypeToJavaName(classDef.getType());
 
                 for (Method method : classDef.getMethods()) {
+                    try {
                     if (!matchAnyRule(rules, javaClassName, method.getName())) {
                         continue;
                     }
@@ -283,6 +284,14 @@ public class VmpJiaguEntry {
 
                     vmpLog(logCallback, "已抽取 methodId=" + block.methodId
                             + " dex=" + block.dexName);
+                    } catch (Exception e) {
+                        vmpLog(logCallback, "跳过方法（抽取异常）："
+                                + javaClassName + "->" + method.getName()
+                                + " 原因：" + e.getMessage());
+                        if (!skipOnError) {
+                            throw e;
+                        }
+                    }
                 }
             }
 
@@ -316,6 +325,7 @@ public class VmpJiaguEntry {
      * */
     public static void rewriteExtractedMethodsToVmCallDex(File dexDir,
                                                           LogCallback logCallback,
+                                                          boolean skipOnError,
                                                           String soName,
                                                           String vmpClassName) throws IOException {
         if (dexDir == null || !dexDir.isDirectory()) {
@@ -379,8 +389,19 @@ public class VmpJiaguEntry {
             }
 
             for (ClassDef classDef : dex.getClasses()) {
-                ClassDef newClass = rewriteClassForVmCall(dexName, classDef,
-                        "L" + cleanVmpClassName.replace('.', '/') + ";");
+                ClassDef newClass;
+                try {
+                    newClass = rewriteClassForVmCall(dexName, classDef,
+                            "L" + cleanVmpClassName.replace('.', '/') + ";");
+                } catch (Exception e) {
+                    vmpLog(logCallback, "跳过类（重写异常）："
+                            + classDef.getType() + " 原因：" + e.getMessage());
+                    if (!skipOnError) {
+                        throw new IOException("重写类失败：" + classDef.getType()
+                                + " " + e.getMessage(), e);
+                    }
+                    newClass = classDef;
+                }
                 allClasses.add(newClass);
             }
 

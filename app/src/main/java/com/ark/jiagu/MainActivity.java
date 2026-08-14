@@ -1080,6 +1080,7 @@ public class MainActivity extends ComponentActivity {
                 extractMethodsToBin(
                         workDir,
                         this::appendLogOnUi,
+                        settings.Debug,
                         validRules.toArray(new String[0])
                 );
 
@@ -1092,6 +1093,7 @@ public class MainActivity extends ComponentActivity {
                 rewriteExtractedMethodsToVmCallDex(
                         workDir,
                         this::appendLogOnUi,
+                        settings.Debug,
                         getValidSoNameFromSettings(),
                         vmpClassName
                 );
