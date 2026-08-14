@@ -231,12 +231,12 @@ public class VmpUtils2 {
                         // 获取 ActivityThread
                         new ImmutableInstruction21c(
                                 Opcode.CONST_CLASS, 0,
-                                new ImmutableTypeReference("android/app/ActivityThread")
+                                new ImmutableTypeReference("Landroid/app/ActivityThread;")
                         ),
                         new ImmutableInstruction35c(
                                 Opcode.INVOKE_STATIC, 0, 0, 0, 0, 0, 0,
                                 new ImmutableMethodReference(
-                                        "android/app/ActivityThread",
+                                        "Landroid/app/ActivityThread;",
                                         "currentApplication",
                                         Collections.emptyList(),
                                         "Landroid/app/Application;"
@@ -254,7 +254,7 @@ public class VmpUtils2 {
                         new ImmutableInstruction35c(
                                 Opcode.INVOKE_VIRTUAL, 1, 3, 0, 0, 0, 0,
                                 new ImmutableMethodReference(
-                                        "android/content/Context",
+                                        "Landroid/content/Context;",
                                         "getPackageManager",
                                         Collections.emptyList(),
                                         "Landroid/content/pm/PackageManager;"
@@ -265,7 +265,7 @@ public class VmpUtils2 {
                         new ImmutableInstruction35c(
                                 Opcode.INVOKE_VIRTUAL, 1, 3, 0, 0, 0, 0,
                                 new ImmutableMethodReference(
-                                        "android/content/Context",
+                                        "Landroid/content/Context;",
                                         "getPackageName",
                                         Collections.emptyList(),
                                         "Ljava/lang/String;"
@@ -276,7 +276,7 @@ public class VmpUtils2 {
                         new ImmutableInstruction35c(
                                 Opcode.INVOKE_VIRTUAL, 3, 4, 5, 0, 0, 0,
                                 new ImmutableMethodReference(
-                                        "android/content/pm/PackageManager",
+                                        "Landroid/content/pm/PackageManager;",
                                         "getApplicationInfo",
                                         Arrays.asList("Ljava/lang/String;", "I"),
                                         "Landroid/content/pm/ApplicationInfo;"
@@ -287,7 +287,7 @@ public class VmpUtils2 {
                         new ImmutableInstruction35c(
                                 Opcode.INVOKE_VIRTUAL, 1, 6, 0, 0, 0, 0,
                                 new ImmutableMethodReference(
-                                        "android/content/pm/ApplicationInfo",
+                                        "Landroid/content/pm/ApplicationInfo;",
                                         "getFlags",
                                         Collections.emptyList(),
                                         "I"
