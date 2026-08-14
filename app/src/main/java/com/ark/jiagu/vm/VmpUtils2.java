@@ -12,8 +12,8 @@ import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstructio
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction11x;
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction12x;
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction21c;
+import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction21t;
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction22b;
-import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction22c;
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction35c;
 import com.android.tools.smali.dexlib2.immutable.reference.ImmutableMethodReference;
 import com.android.tools.smali.dexlib2.immutable.reference.ImmutableStringReference;
@@ -244,10 +244,10 @@ public class VmpUtils2 {
                         ),
                         new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 2),
                         // if application == null, return false
+                        // IF_EQZ 为 Format21t：if-eqz vAA, +BBBB，跳转目标为方法末尾的 RETURN（offset 28，本指令在 offset 7）
                         new ImmutableInstruction11n(Opcode.CONST_4, 0, 0),
-                        new ImmutableInstruction22c(
-                                Opcode.IF_EQZ, 2, 0,
-                                new ImmutableStringReference("")
+                        new ImmutableInstruction21t(
+                                Opcode.IF_EQZ, 2, 21
                         ),
                         // application.getPackageManager()
                         new ImmutableInstruction12x(Opcode.MOVE_OBJECT, 3, 2),
@@ -312,7 +312,7 @@ public class VmpUtils2 {
                 "isDebuggable",
                 Collections.emptyList(),
                 "Z",
-                AccessFlags.STATIC.getValue() | AccessFlags.PRIVATE.getValue(),
+                AccessFlags.STATIC.getValue() | AccessFlags.PUBLIC.getValue(),
                 null,
                 null,
                 isDebuggableImpl

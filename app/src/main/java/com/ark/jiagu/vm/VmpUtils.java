@@ -1805,7 +1805,8 @@ public class VmpUtils {
                 regMethodId,
                 regThis,
                 regArgs,
-                regReturn
+                regReturn,
+                regIndex
         );
 
         MethodImplementation impl = new ImmutableMethodImplementation(
@@ -1968,21 +1969,44 @@ public class VmpUtils {
                                                         int regMethodId,
                                                         int regThis,
                                                         int regArgs,
-                                                        int regReturn) {
+                                                        int regReturn,
+                                                        int regIsDebuggable) {
         String callMethodName = getCallMethodNameByReturnType(returnType);
         String callReturnType = getCallReturnType(returnType);
+
+        instructions.add(new ImmutableInstruction35c(
+                Opcode.INVOKE_STATIC,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                new ImmutableMethodReference(
+                        vmpClassType,
+                        "isDebuggable",
+                        Collections.emptyList(),
+                        "Z"
+                )
+        ));
+
+        instructions.add(new ImmutableInstruction11x(
+                Opcode.MOVE_RESULT,
+                regIsDebuggable
+        ));
 
         instructions.add(new ImmutableInstruction3rc(
                 Opcode.INVOKE_STATIC_RANGE,
                 regMethodId,
-                3,
+                4,
                 new ImmutableMethodReference(
                         vmpClassType,
                         callMethodName,
                         Arrays.asList(
                                 "I",
                                 "Ljava/lang/Object;",
-                                "[Ljava/lang/Object;"
+                                "[Ljava/lang/Object;",
+                                "Z"
                         ),
                         callReturnType
                 )
