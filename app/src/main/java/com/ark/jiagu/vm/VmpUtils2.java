@@ -14,6 +14,7 @@ import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstructio
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction21c;
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction21t;
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction22b;
+import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction22c;
 import com.android.tools.smali.dexlib2.immutable.instruction.ImmutableInstruction35c;
 import com.android.tools.smali.dexlib2.immutable.reference.ImmutableMethodReference;
 import com.android.tools.smali.dexlib2.immutable.reference.ImmutableStringReference;
@@ -223,34 +224,72 @@ public class VmpUtils2 {
         );
 
         // ---------- 调试模式检测（Java 端获取 FLAG_DEBUGGABLE） ----------
-        // 纯 Java 实现：通过 ActivityThread 获取 Application，检查 FLAG_DEBUGGABLE
-        // 结果缓存，只计算一次
+        // 纯 Java 实现：通过反射获取 ActivityThread.currentApplication()，检查 FLAG_DEBUGGABLE
+        // 使用反射规避 hidden API 限制（Android 9+ 直接调用会被拦截）
         // reg0 = return value
         List<com.android.tools.smali.dexlib2.iface.instruction.Instruction> isDebuggableInstructions =
                 Arrays.asList(
-                        // 获取 ActivityThread
+                        // v1 = Class.forName("android.app.ActivityThread")
                         new ImmutableInstruction21c(
-                                Opcode.CONST_CLASS, 0,
-                                new ImmutableTypeReference("Landroid/app/ActivityThread;")
+                                Opcode.CONST_STRING, 1,
+                                new ImmutableStringReference("android.app.ActivityThread")
                         ),
                         new ImmutableInstruction35c(
-                                Opcode.INVOKE_STATIC, 0, 0, 0, 0, 0, 0,
+                                Opcode.INVOKE_STATIC, 1, 1, 0, 0, 0, 0,
                                 new ImmutableMethodReference(
-                                        "Landroid/app/ActivityThread;",
-                                        "currentApplication",
-                                        Collections.emptyList(),
-                                        "Landroid/app/Application;"
+                                        "Ljava/lang/Class;",
+                                        "forName",
+                                        Collections.singletonList("Ljava/lang/String;"),
+                                        "Ljava/lang/Class;"
+                                )
+                        ),
+                        new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 1),
+                        // v2 = v1.getDeclaredMethod("currentApplication", null)
+                        new ImmutableInstruction21c(
+                                Opcode.CONST_STRING, 2,
+                                new ImmutableStringReference("currentApplication")
+                        ),
+                        new ImmutableInstruction11n(Opcode.CONST_4, 7, 0),
+                        new ImmutableInstruction35c(
+                                Opcode.INVOKE_VIRTUAL, 3, 1, 2, 7, 0, 0,
+                                new ImmutableMethodReference(
+                                        "Ljava/lang/Class;",
+                                        "getDeclaredMethod",
+                                        Arrays.asList("Ljava/lang/String;", "[Ljava/lang/Class;"),
+                                        "Ljava/lang/reflect/Method;"
                                 )
                         ),
                         new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 2),
+                        // v2.setAccessible(true)
+                        new ImmutableInstruction11n(Opcode.CONST_4, 7, 1),
+                        new ImmutableInstruction35c(
+                                Opcode.INVOKE_VIRTUAL, 2, 2, 7, 0, 0, 0,
+                                new ImmutableMethodReference(
+                                        "Ljava/lang/reflect/Method;",
+                                        "setAccessible",
+                                        Collections.singletonList("Z"),
+                                        "V"
+                                )
+                        ),
+                        // v3 = v2.invoke(null, null) -> Application
+                        new ImmutableInstruction11n(Opcode.CONST_4, 7, 0),
+                        new ImmutableInstruction35c(
+                                Opcode.INVOKE_VIRTUAL, 3, 2, 7, 7, 0, 0,
+                                new ImmutableMethodReference(
+                                        "Ljava/lang/reflect/Method;",
+                                        "invoke",
+                                        Arrays.asList("Ljava/lang/Object;", "[Ljava/lang/Object;"),
+                                        "Ljava/lang/Object;"
+                                )
+                        ),
+                        new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 3),
                         // if application == null, return false
-                        // IF_EQZ 为 Format21t：if-eqz vAA, +BBBB，跳转目标为方法末尾的 RETURN（offset 28，本指令在 offset 7）
+                        // IF_EQZ 为 Format21t：if-eqz vAA, +BBBB，跳转目标为方法末尾的 RETURN（offset 45，本指令在 offset 25）
                         new ImmutableInstruction11n(Opcode.CONST_4, 0, 0),
                         new ImmutableInstruction21t(
-                                Opcode.IF_EQZ, 2, 21
+                                Opcode.IF_EQZ, 3, 20
                         ),
                         // application.getPackageManager()
-                        new ImmutableInstruction12x(Opcode.MOVE_OBJECT, 3, 2),
                         new ImmutableInstruction35c(
                                 Opcode.INVOKE_VIRTUAL, 1, 3, 0, 0, 0, 0,
                                 new ImmutableMethodReference(
@@ -301,7 +340,7 @@ public class VmpUtils2 {
 
         com.android.tools.smali.dexlib2.iface.MethodImplementation isDebuggableImpl =
                 new ImmutableMethodImplementation(
-                        7,
+                        8,
                         isDebuggableInstructions,
                         Collections.emptyList(),
                         Collections.emptyList()
