@@ -284,10 +284,15 @@ public class VmpUtils2 {
                         ),
                         new ImmutableInstruction11x(Opcode.MOVE_RESULT_OBJECT, 3),
                         // if application == null, return false
-                        // IF_EQZ 为 Format21t：if-eqz vAA, +BBBB，跳转目标为方法末尾的 RETURN（offset 45，本指令在 offset 25）
+                        // IF_EQZ 为 Format21t：if-eqz vAA, +BBBB，跳转目标为方法末尾的 RETURN（offset 47，本指令在 offset 25）
                         new ImmutableInstruction11n(Opcode.CONST_4, 0, 0),
                         new ImmutableInstruction21t(
-                                Opcode.IF_EQZ, 3, 20
+                                Opcode.IF_EQZ, 3, 22
+                        ),
+                        // v3 是 Method.invoke 返回的 Object，需 cast 为 Context 才能调用 getPackageManager/getPackageName
+                        new ImmutableInstruction21c(
+                                Opcode.CHECK_CAST, 3,
+                                new ImmutableTypeReference("Landroid/content/Context;")
                         ),
                         // application.getPackageManager()
                         new ImmutableInstruction35c(
